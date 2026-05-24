@@ -7,6 +7,10 @@ import assert from 'node:assert/strict'
 import { initiatorHandshake, responderHandshake } from '../src/handshake.js'
 import { mlDsa } from 'kxco-post-quantum'
 
+// Generate once and reuse across auth tests — keygen is the expensive step
+const initId = mlDsa.ml_dsa65.keygen()
+const respId = mlDsa.ml_dsa65.keygen()
+
 // Pairs two async queues so initiator and responder can talk in memory.
 function makeInMemoryChannel() {
   const q1 = []  // initiator → responder
