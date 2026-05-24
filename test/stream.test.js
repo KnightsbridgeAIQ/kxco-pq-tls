@@ -74,12 +74,15 @@ test('wrapStream: multiple sequential messages', async () => {
   const messages = ['alpha', 'beta', 'gamma', 'delta']
   const received = []
 
-  server.on('data', (d) => received.push(d.toString()))
+  const allReceived = new Promise((resolve) => {
+    server.on('data', (d) => {
+      received.push(d.toString())
+      if (received.length === messages.length) resolve()
+    })
+  })
 
-  for (const m of messages) {
-    await new Promise((res) => client.write(m, res))
-    await new Promise((res) => setTimeout(res, 5))
-  }
+  for (const m of messages) client.write(m)
+  await allReceived
 
   assert.deepEqual(received, messages)
   client.end()

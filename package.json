@@ -46,7 +46,7 @@
   },
   "devDependencies": {},
   "scripts": {
-    "test": "node --test test/primitives.test.js test/handshake.test.js test/stream.test.js"
+    "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js"
   },
   "publishConfig": {
     "access": "public"
