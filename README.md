@@ -105,3 +105,9 @@ const { txKey, rxKey } = await responderHandshake(send, recv, options?)
 ## License
 
 Apache-2.0 © 2026 KXCO by Knightsbridge
+
+## Maintainers
+
+Shayne Heffernan · John Heffernan — [KXCO by Knightsbridge](https://kxco.ai)
+
+Deployed in production at [target150.com](https://target150.com), [knightsbridgelaw.com](https://knightsbridgelaw.com), [livetradingnews.com](https://livetradingnews.com).
