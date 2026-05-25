@@ -1,0 +1,26 @@
+version: 2
+
+# https://docs.socket.dev/docs/socket-yml
+
+issues:
+  cve:
+    action: error
+  malware:
+    action: error
+  protestware:
+    action: error
+  new-author:
+    action: warn
+  install-scripts:
+    action: warn
+  telemetry:
+    action: warn
+
+# kxco-post-quantum — maintained by this organisation.
+# @noble/* — Paul Miller's cryptography suite, audited by Cure53 (2024).
+ignore:
+  - "kxco-post-quantum"
+  - "@noble/post-quantum"
+  - "@noble/hashes"
+  - "@noble/ciphers"
+  - "@noble/curves"

@@ -1,5 +1,10 @@
 # kxco-pq-tls
 
+[![npm](https://img.shields.io/npm/v/kxco-pq-tls?label=npm&color=b0964f)](https://www.npmjs.com/package/kxco-pq-tls)
+[![Socket](https://socket.dev/api/badge/npm/package/kxco-pq-tls)](https://socket.dev/npm/package/kxco-pq-tls)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![node](https://img.shields.io/node/v/kxco-pq-tls.svg)](https://nodejs.org)
+
 Hybrid post-quantum secure channels: ML-KEM-768 + X25519 key exchange, AES-256-GCM data encryption. Wraps Node.js streams and Cloudflare Workers WebSockets. Drop-in quantum-safe channel layer.
 
 ## Install
@@ -101,6 +106,18 @@ const { txKey, rxKey } = await responderHandshake(send, recv, options?)
 | [`kxco-pq-hsm`](https://www.npmjs.com/package/kxco-pq-hsm) | HSM-backed key management |
 | [`kxco-pq-attest`](https://www.npmjs.com/package/kxco-pq-attest) | Payload attestation envelopes |
 | [`kxco-pq-sdk`](https://www.npmjs.com/package/kxco-pq-sdk) | Integration layer |
+
+## Security
+
+Key exchange uses [Noble post-quantum](https://github.com/paulmillr/noble-post-quantum) ML-KEM-768 combined with X25519 from [Noble curves](https://github.com/paulmillr/noble-curves). Session encryption uses AES-256-GCM from [Noble ciphers](https://github.com/paulmillr/noble-ciphers). All Noble libraries are independently audited by Cure53 (2024). A quantum adversary who breaks X25519 still cannot break the ML-KEM-768 component; both must be broken simultaneously.
+
+To report a vulnerability, open a [private security advisory](https://github.com/JackKXCO/kxco-pq-tls/security/advisories/new) or email **security@kxco.ai**.
+
+## Funding
+
+Maintained by **Shayne Heffernan** and **John Heffernan** at [KXCO by Knightsbridge](https://kxco.ai).
+
+[Knightsbridge Law](https://knightsbridge.law) · [target150.com](https://target150.com) · [livetradingnews.com](https://livetradingnews.com)
 
 ## License
 

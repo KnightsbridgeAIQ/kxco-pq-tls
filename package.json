@@ -1,6 +1,6 @@
 {
   "name": "kxco-pq-tls",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Hybrid post-quantum secure channels: ML-KEM-768 + X25519 key exchange, AES-256-GCM data encryption. Wraps Node.js streams and Cloudflare Workers WebSockets. Drop-in quantum-safe channel layer.",
   "keywords": [
     "post-quantum",
@@ -13,7 +13,15 @@
     "cloudflare-workers",
     "nist",
     "fips-203",
-    "kxco"
+    "kxco",
+    "hybrid-kem",
+    "aes-256-gcm",
+    "websocket",
+    "node-stream",
+    "mutual-auth",
+    "quantum-safe",
+    "end-to-end-encryption",
+    "encrypted-channel"
   ],
   "license": "Apache-2.0",
   "author": "KXCO by Knightsbridge <hello@kxco.ai>",
@@ -56,6 +64,7 @@
   "scripts": {
     "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js"
   },
+  "funding": "https://kxco.ai",
   "publishConfig": {
     "provenance": true,
     "access": "public"
