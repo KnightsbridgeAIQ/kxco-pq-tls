@@ -21,7 +21,7 @@ import { wrapStream } from 'kxco-pq-tls'
 
 // Server
 const server = net.createServer(async (socket) => {
-  const channel = await wrapStream(socket, 'responder')
+  const channel = await wrapStream(socket, { role: 'responder' })
   channel.on('data', buf => console.log('received:', buf.toString()))
   channel.write(Buffer.from('hello from server'))
 })
@@ -29,7 +29,7 @@ server.listen(4000)
 
 // Client
 const socket = net.connect(4000)
-const channel = await wrapStream(socket, 'initiator')
+const channel = await wrapStream(socket, { role: 'initiator' })
 channel.write(Buffer.from('hello from client'))
 ```
 
@@ -42,7 +42,7 @@ import { wrapWebSocket } from 'kxco-pq-tls'
 export default {
   async fetch(req) {
     const [client, server] = Object.values(new WebSocketPair())
-    const channel = await wrapWebSocket(server, 'responder')
+    const channel = await wrapWebSocket(server, { role: 'responder' })
     channel.addEventListener('message', e => console.log(e.data))
     return new Response(null, { status: 101, webSocket: client })
   }
@@ -59,7 +59,7 @@ import { mlDsa } from 'kxco-post-quantum'
 const identity = mlDsa.ml_dsa65.keygen()
 
 // Pass identity to either wrapStream or initiatorHandshake/responderHandshake
-const channel = await wrapStream(socket, 'initiator', { identity })
+const channel = await wrapStream(socket, { role: 'initiator', identity })
 ```
 
 ## Handshake protocol
@@ -88,14 +88,14 @@ If mutual auth is requested, both sides exchange a `Finished` frame (encrypted o
 import { wrapStream, wrapWebSocket, initiatorHandshake, responderHandshake } from 'kxco-pq-tls'
 
 // High-level
-const channel = await wrapStream(nodeStream, 'initiator' | 'responder', options?)
-const channel = await wrapWebSocket(ws, 'initiator' | 'responder', options?)
+const channel = await wrapStream(nodeStream, { role: 'initiator' | 'responder', identity? })
+const channel = await wrapWebSocket(ws, { role: 'initiator' | 'responder', identity? })
 
 // Low-level (bring your own send/recv)
 const { txKey, rxKey } = await initiatorHandshake(send, recv, options?)
 const { txKey, rxKey } = await responderHandshake(send, recv, options?)
 
-// options: { identity?: { publicKey, secretKey } }  — ML-DSA-65 keypair for mutual auth
+// options for low-level: { identity?: { publicKey, secretKey } }  — ML-DSA-65 keypair for mutual auth
 ```
 
 ## Related packages
