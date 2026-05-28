@@ -1,7 +1,7 @@
 {
   "name": "kxco-pq-tls",
-  "version": "1.0.7",
-  "description": "Hybrid post-quantum secure channels: ML-KEM-768 + X25519 key exchange, AES-256-GCM data encryption. Wraps Node.js streams and Cloudflare Workers WebSockets. Drop-in quantum-safe channel layer.",
+  "version": "1.0.8",
+  "description": "Post-quantum encrypted channels for Node.js streams and WebSockets — ML-KEM-768 key exchange (NIST FIPS 203) with ML-DSA-65 mutual authentication (NIST FIPS 204).",
   "keywords": [
     "post-quantum",
     "pqc",
