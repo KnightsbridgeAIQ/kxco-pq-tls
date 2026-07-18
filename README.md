@@ -201,7 +201,7 @@ Session encryption uses AES-256-GCM with a per-message sequence number as the no
 
 Key exchange uses [Noble post-quantum](https://github.com/paulmillr/noble-post-quantum) ML-KEM-768 combined with X25519 from [Noble curves](https://github.com/paulmillr/noble-curves). Session encryption uses AES-256-GCM from [Noble ciphers](https://github.com/paulmillr/noble-ciphers). All Noble libraries are independently audited by Cure53 (2024). A quantum adversary who breaks X25519 still cannot break the ML-KEM-768 component; both must be broken simultaneously.
 
-To report a vulnerability, open a [private security advisory](https://github.com/JackKXCO/kxco-pq-tls/security/advisories/new) or email **security@kxco.ai**.
+To report a vulnerability, open a [private security advisory](https://github.com/KnightsbridgeAIQ/kxco-pq-tls/security/advisories/new) or email **security@kxco.ai**.
 
 ## Part of the KXCO stack
 
