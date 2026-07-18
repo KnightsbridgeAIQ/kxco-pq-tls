@@ -60,7 +60,7 @@
     "node": ">=20.19"
   },
   "dependencies": {
-    "@noble/ciphers": "^1.0.0",
+    "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^1.8.0",
     "@noble/hashes": "^1.7.0",
     "kxco-post-quantum": "^1.1.6"
