@@ -1,0 +1,43 @@
+name: Dependabot auto-merge
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    name: automerge
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse major version bumps
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          vers=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -2)
+          count=$(echo "$vers" | grep -c . || true)
+          if [ "$count" -ne 2 ]; then echo "cannot parse versions - leaving for human review"; exit 1; fi
+          from=$(echo "$vers" | sed -n 1p | cut -d. -f1)
+          to=$(echo "$vers" | sed -n 2p | cut -d. -f1)
+          if [ "$from" != "$to" ]; then echo "major bump ($from -> $to) - leaving for human review"; exit 1; fi
+      - name: Wait for all other checks to pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for i in $(seq 1 40); do
+            sleep 30
+            runs=$(gh api "repos/${{ github.repository }}/commits/$SHA/check-runs" --jq '[.check_runs[] | select(.name != "automerge")]')
+            total=$(echo "$runs" | jq 'length')
+            failed=$(echo "$runs" | jq '[.[] | select(.conclusion != null and .conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length')
+            pending=$(echo "$runs" | jq '[.[] | select(.status != "completed")] | length')
+            echo "attempt $i: total=$total failed=$failed pending=$pending"
+            if [ "$failed" -gt 0 ]; then echo "a check failed - not merging"; exit 1; fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then echo "all checks green"; exit 0; fi
+          done
+          echo "timed out waiting for checks"; exit 1
+      - name: Merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --squash "${{ github.event.pull_request.html_url }}"
