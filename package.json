@@ -1,6 +1,6 @@
 {
   "name": "kxco-pq-tls",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Post-quantum encrypted channels for Node.js streams and WebSockets — ML-KEM-768 key exchange (NIST FIPS 203) with ML-DSA-65 mutual authentication (NIST FIPS 204).",
   "keywords": [
     "post-quantum",
@@ -24,7 +24,7 @@
     "encrypted-channel"
   ],
   "license": "Apache-2.0",
-  "author": "KXCO by Knightsbridge <hello@kxco.ai>",
+  "author": "Shayne Heffernan and John Heffernan",
   "contributors": [
     {
       "name": "Shayne Heffernan"
@@ -63,7 +63,7 @@
     "@noble/ciphers": "^1.0.0",
     "@noble/curves": "^1.8.0",
     "@noble/hashes": "^1.7.0",
-    "kxco-post-quantum": "^1.1.6"
+    "kxco-post-quantum": "^1.2.0"
   },
   "scripts": {
     "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js"
