@@ -61,10 +61,13 @@ a diagnosable error rather than a hang. The deadline covers the handshake as a
 whole, not each message, so a peer that dribbles bytes cannot extend it. Pass
 `0` for the previous unbounded behaviour.
 
-What it still cannot do is tell you *which* of the causes applies: an
-unreachable peer, a peer not speaking this protocol, and a peer configured
-without an identity all present as the same timeout. The error message names
-all three rather than guessing between them.
+The timeout is a narrower signal than it first looks, which is what makes it
+useful. It fires only after a peer has accepted the connection and then not
+sent the frame this side was waiting for. A peer speaking a different protocol
+fails earlier and differently, on a version byte or a frame length, and a peer
+that was never reachable fails before the handshake starts, in the caller's
+socket. So in practice this error means a configuration mismatch, and the
+message says so rather than listing every theoretical cause.
 
 **Start and update.** One thing this package does not have and three it does.
 It does not sign its own release assets with ML-DSA-65 against a committed

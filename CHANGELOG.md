@@ -26,9 +26,12 @@ a peer that legitimately takes more than 30 seconds to answer, needs to set the
 option. Nothing else about the handshake, the wire format or the session
 changes, and 1.2.1 and 1.2.2 interoperate in both directions.
 
-It also does not tell you which cause applies. An unreachable peer, a peer not
-speaking this protocol and a peer without an identity all present as the same
-timeout; the message names all three rather than guessing.
+The signal is narrower than a bare timeout, which is what makes it worth acting
+on. It fires only once a peer has accepted the connection and then not sent the
+expected frame. A peer speaking a different protocol fails earlier and
+differently, on a version byte or a frame length; a peer that was never
+reachable fails before the handshake begins, in the caller's socket. In practice
+this error means a configuration mismatch, and the message says so.
 
 **ASSESSMENT.md.** Where this package's boundary falls, what cryptographic
 agility it has beyond what the primitives provide, and what constrains its

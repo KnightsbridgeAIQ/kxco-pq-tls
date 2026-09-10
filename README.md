@@ -174,8 +174,9 @@ try {
   const secure = await wrapStream(socket, { role: 'initiator', identity })
 } catch (err) {
   if (err.code === ERR_HANDSHAKE_TIMEOUT) {
-    // The peer is unreachable, is not speaking this protocol, or was not
-    // configured with an identity while this side was.
+    // The peer accepted the connection and then did not send the expected
+    // frame. Usually a configuration mismatch: this side has an identity and
+    // the peer does not.
   }
 }
 ```

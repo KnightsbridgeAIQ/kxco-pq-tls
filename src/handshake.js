@@ -65,10 +65,13 @@ function withDeadline(ms) {
   const expired = new Promise((_, reject) => {
     timer = setTimeout(() => {
       reject(new KxcoPqTlsError(
-        `handshake did not complete within ${ms}ms. If this side was ` +
-        'configured with an identity and the peer was not, the peer never ' +
-        'sends a Finished frame and this is what that looks like. Otherwise ' +
-        'the peer is unreachable or not speaking this protocol.',
+        `handshake did not complete within ${ms}ms. The peer accepted the ` +
+        'connection and then did not send the frame this side was waiting ' +
+        'for. The usual cause is a configuration mismatch: this side was ' +
+        'given an identity and the peer was not, so the peer completed its ' +
+        'handshake and never sent a Finished frame. A peer speaking a ' +
+        'different protocol fails earlier and differently, with a version or ' +
+        'length error rather than this.',
         ERR_HANDSHAKE_TIMEOUT,
       ))
     }, ms)
