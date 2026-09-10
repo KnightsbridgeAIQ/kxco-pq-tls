@@ -58,9 +58,23 @@ But the initiator cannot distinguish "the peer will not authenticate" from "the
 network is slow", and this package supplies no timeout of its own: `recv` is
 the caller's, so the deadline is the caller's too. Give it one.
 
-**Start and update.** No release signing of its own. The primitives package
-signs release assets with ML-DSA-65 against a committed key; this package is
-published through CI with npm provenance and nothing further.
+**Start and update.** One thing this package does not have and three it does.
+It does not sign its own release assets with ML-DSA-65 against a committed
+public key; that is the primitives package, and the distinction is worth
+keeping because it is the strongest of the four.
+
+What every release here carries:
+
+- A **SLSA provenance attestation**, tying the published tarball to the commit
+  and workflow that built it. `npm audit signatures` checks it, and it can be
+  read straight from the registry without asking us for anything.
+- A **CycloneDX SBOM** as a GitHub Release asset, at a permanent unauthenticated
+  URL rather than an expiring build artifact.
+- **Exact pins** on `@noble/ciphers`, `@noble/curves` and `@noble/hashes`, so
+  the code performing the symmetric and classical work cannot change without a
+  release of this package.
+
+That is a checkable release, not a bare one.
 
 **Protect records, enforce policy, retain history.** None apply. This is a
 transport with no persistence: no logs, no stored state, no records to retain.
