@@ -148,10 +148,41 @@ Wraps a Node.js `Duplex` stream (e.g. `net.Socket`) with a post-quantum secure c
 interface ChannelOptions {
   role: 'initiator' | 'responder'
   identity?: { publicKey: Uint8Array, secretKey: Uint8Array }  // ML-DSA-65 keypair
+  handshakeTimeoutMs?: number   // total handshake deadline, default 30000, 0 disables
 }
 
 wrapStream(socket: Duplex, options: ChannelOptions): Promise<Duplex>
 ```
+
+#### The handshake deadline
+
+A handshake is four small messages and a few milliseconds of arithmetic, so it
+runs long only when the peer is never going to answer. One case makes that easy
+to hit by accident: **a side configured with an `identity` expects a `Finished`
+frame, and a peer with no identity of its own never sends one.** Both ends
+believe they are correctly configured, the responder completes, and the
+initiator waits.
+
+`recv` belongs to the caller, so before this option nothing in this package
+could bound that wait. It now defaults to 30 seconds and fails with a
+distinguishable error:
+
+```js
+import { wrapStream, ERR_HANDSHAKE_TIMEOUT } from 'kxco-pq-tls'
+
+try {
+  const secure = await wrapStream(socket, { role: 'initiator', identity })
+} catch (err) {
+  if (err.code === ERR_HANDSHAKE_TIMEOUT) {
+    // The peer is unreachable, is not speaking this protocol, or was not
+    // configured with an identity while this side was.
+  }
+}
+```
+
+The deadline covers the handshake as a whole rather than each message, so a peer
+that dribbles bytes cannot hold the connection open by resetting a per-message
+timer. Pass `handshakeTimeoutMs: 0` for the previous unbounded behaviour.
 
 ### `wrapWebSocket(ws, options)` → `Promise<PqTlsWebSocket>`
 

@@ -1,6 +1,6 @@
 {
   "name": "kxco-pq-tls",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Post-quantum encrypted channels for Node.js streams and WebSockets. ML-KEM-768 key exchange (FIPS 203) with ML-DSA-65 mutual authentication (FIPS 204), so a recorded session stays closed to a quantum adversary.",
   "keywords": [
     "post-quantum",

@@ -5,6 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initiatorHandshake, responderHandshake } from '../src/handshake.js'
+import { ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
 import { mlDsa } from 'kxco-post-quantum'
 
 // Generate once and reuse across auth tests — keygen is the expensive step
@@ -114,4 +115,65 @@ test('mutual auth: tampered Finished signature is rejected', async () => {
     ]),
     /authentication failed|identity verification failed/
   )
+})
+
+// ---------------------------------------------------------------------------
+// Handshake deadline
+// ---------------------------------------------------------------------------
+
+test('mismatched auth config fails with a timeout instead of hanging', async () => {
+  // The exact stall this deadline exists for. The initiator holds an identity
+  // so it sets the auth flag and waits for a Finished frame. The responder has
+  // no identity, so it completes without ever sending one. Before the deadline
+  // the initiator waited here for as long as the caller let it.
+  const ch = makeInMemoryChannel()
+
+  const responder = responderHandshake(ch.responderSend, ch.responderRecv, {})
+  const initiator = initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, {
+    identity: initId,
+    handshakeTimeoutMs: 200,
+  })
+
+  // The responder is not the one that stalls: it finishes normally.
+  await responder
+
+  const err = await initiator.then(
+    () => { throw new Error('expected the initiator to time out') },
+    (e) => e,
+  )
+  assert.equal(err.name, 'KxcoPqTlsError')
+  assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
+  assert.match(err.message, /within 200ms/)
+})
+
+test('a silent peer times out rather than waiting forever', async () => {
+  const never = () => new Promise(() => {})
+  const err = await initiatorHandshake(async () => {}, never, { handshakeTimeoutMs: 100 })
+    .then(() => { throw new Error('expected a timeout') }, (e) => e)
+
+  assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
+})
+
+test('the deadline does not fire on a handshake that completes', async () => {
+  const ch = makeInMemoryChannel()
+  const [init, resp] = await Promise.all([
+    initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, {
+      identity: initId, handshakeTimeoutMs: 10_000,
+    }),
+    responderHandshake(ch.responderSend, ch.responderRecv, {
+      identity: respId, handshakeTimeoutMs: 10_000,
+    }),
+  ])
+  assert.deepEqual(init.txKey, resp.rxKey)
+  assert.deepEqual(init.rxKey, resp.txKey)
+})
+
+test('handshakeTimeoutMs: 0 restores the unbounded wait', async () => {
+  const never = () => new Promise(() => {})
+  const settled = await Promise.race([
+    initiatorHandshake(async () => {}, never, { handshakeTimeoutMs: 0 })
+      .then(() => 'resolved', () => 'rejected'),
+    new Promise(res => setTimeout(() => res('still waiting'), 300)),
+  ])
+  assert.equal(settled, 'still waiting')
 })

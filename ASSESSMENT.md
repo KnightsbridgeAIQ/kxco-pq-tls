@@ -54,9 +54,17 @@ mutual authentication against a responder that has no identity will wait for a
 It does not downgrade. The flags byte is inside the ClientHello and the
 ClientHello is inside the signed transcript, so an attacker who clears the bit
 in transit cannot produce a valid signature; what they get is the same stall.
-But the initiator cannot distinguish "the peer will not authenticate" from "the
-network is slow", and this package supplies no timeout of its own: `recv` is
-the caller's, so the deadline is the caller's too. Give it one.
+
+**Bounded since 1.2.2.** `handshakeTimeoutMs` defaults to 30 seconds and fails
+with `err.code === 'ERR_KXCO_PQ_TLS_HANDSHAKE_TIMEOUT'`, so the mismatch is now
+a diagnosable error rather than a hang. The deadline covers the handshake as a
+whole, not each message, so a peer that dribbles bytes cannot extend it. Pass
+`0` for the previous unbounded behaviour.
+
+What it still cannot do is tell you *which* of the causes applies: an
+unreachable peer, a peer not speaking this protocol, and a peer configured
+without an identity all present as the same timeout. The error message names
+all three rather than guessing between them.
 
 **Start and update.** One thing this package does not have and three it does.
 It does not sign its own release assets with ML-DSA-65 against a committed

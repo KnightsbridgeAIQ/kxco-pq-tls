@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.2.2
+
+A handshake that could never complete now fails instead of waiting.
+
+**`handshakeTimeoutMs`, default 30000.** A side configured with an `identity`
+sets the auth flag and waits for a `Finished` frame. A peer with no identity of
+its own never sends one: it completes the handshake and moves on. Both ends
+believe they are correctly configured and the initiator sits there. `recv`
+belongs to the caller, so nothing in this package could bound that wait.
+
+It is bounded now, and distinguishable:
+
+```js
+import { ERR_HANDSHAKE_TIMEOUT } from 'kxco-pq-tls'
+if (err.code === ERR_HANDSHAKE_TIMEOUT) { /* ... */ }
+```
+
+The deadline covers the handshake as a whole rather than each message, so a peer
+that dribbles bytes cannot hold the connection open by resetting a per-message
+timer. `handshakeTimeoutMs: 0` restores the previous unbounded behaviour.
+
+This changes a default. A deployment that relied on an unbounded handshake, for
+a peer that legitimately takes more than 30 seconds to answer, needs to set the
+option. Nothing else about the handshake, the wire format or the session
+changes, and 1.2.1 and 1.2.2 interoperate in both directions.
+
+It also does not tell you which cause applies. An unreachable peer, a peer not
+speaking this protocol and a peer without an identity all present as the same
+timeout; the message names all three rather than guessing.
+
+**ASSESSMENT.md.** Where this package's boundary falls, what cryptographic
+agility it has beyond what the primitives provide, and what constrains its
+lifecycle. It references the `kxco-post-quantum` evidence rather than restating
+it, because a second copy of a conformance claim invites the reader to count it
+twice.
+
+**An evidence bundle.** `npm run evidence` records identity, this package's own
+tests, its SBOM, registry signature verification, and the `kxco-post-quantum`
+version actually installed rather than the range declared.
+
 ## 1.2.1
 
 Documentation and a dependency refresh. No source change.
