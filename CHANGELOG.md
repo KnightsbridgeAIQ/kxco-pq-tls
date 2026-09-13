@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.3
+
+The handshake deadline added in 1.2.2 could not fire.
+
+Its timer was `unref`'d, so it could not hold the event loop open. In a process
+where the handshake is the only pending work, the loop drains and the timer
+never runs: the deadline silently does nothing, which is the exact hang it was
+written to prevent. The option was accepted, documented and inert.
+
+It surfaced as four failing tests on Node 20 and 22, where the runner reported
+that promise resolution was still pending while the event loop had already
+resolved. Node 24 masked it. That is why **1.2.2 was tagged but never published
+to npm**: its release build failed on `npm test` and the version does not exist
+on the registry. Upgrade from 1.2.1 straight to 1.2.3.
+
+Holding the loop open is bounded. Both handshakes clear the timer in a `finally`
+block, so it lives no longer than the handshake does.
+
+CI now reports a failing assertion as a workflow annotation rather than only in
+the run log, because downloading a run log needs admin rights on the repository
+and the failure was visible but unreadable without them.
+
 ## 1.2.2
 
 A handshake that could never complete now fails instead of waiting.
