@@ -26,4 +26,26 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npm test
+
+      # The test output goes into the job summary as well as the log. v1.2.2
+      # failed on Node 20 and 22 and passed on 24, and the log is only
+      # readable with admin rights on the repository, so the failure could be
+      # seen but not read. A summary is public to anyone who can see the run,
+      # which is what a failing build should be.
+      - name: Run the test suite
+        run: |
+          set +e
+          npm test 2>&1 | tee /tmp/test-output.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "## Node ${{ matrix.node }} test failure"
+              echo
+              echo '```'
+              grep -E 'not ok|Error|AssertionError|expected|actual|operator|code:|failing tests|# fail' \
+                /tmp/test-output.txt | head -60
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
