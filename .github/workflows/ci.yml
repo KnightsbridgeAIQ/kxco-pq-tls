@@ -32,6 +32,10 @@ jobs:
       # readable with admin rights on the repository, so the failure could be
       # seen but not read. A summary is public to anyone who can see the run,
       # which is what a failing build should be.
+      # The failing assertion is emitted as a workflow annotation, not only
+      # into the log. Downloading a run log needs admin rights on the
+      # repository, so a red build was visible but unreadable to anyone else.
+      # Annotations are readable by anyone who can see the run.
       - name: Run the test suite
         run: |
           set +e
@@ -39,13 +43,8 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
-            {
-              echo "## Node ${{ matrix.node }} test failure"
-              echo
-              echo '```'
-              grep -E 'not ok|Error|AssertionError|expected|actual|operator|code:|failing tests|# fail' \
-                /tmp/test-output.txt | head -60
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            msg=$(grep -E 'not ok [0-9]|AssertionError|expected|actual:|operator:|code:|error:' \
+                    /tmp/test-output.txt | head -25 | sed 's/%/%25/g; s/\r/ /g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Node ${{ matrix.node }} test failure::${msg}"
           fi
           exit "$status"
