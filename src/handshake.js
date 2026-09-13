@@ -75,8 +75,14 @@ function withDeadline(ms) {
         ERR_HANDSHAKE_TIMEOUT,
       ))
     }, ms)
-    // Do not hold the event loop open on account of a handshake deadline.
-    if (typeof timer?.unref === 'function') timer.unref()
+    // Deliberately NOT unref'd. An unref'd timer cannot hold the event loop
+    // open, so in a process where the handshake is the only pending work the
+    // loop drains and this timer never fires: the deadline silently does
+    // nothing, which is the exact hang it exists to prevent. It was unref'd
+    // in 1.2.2 and every deadline test failed on Node 20 and 22 with
+    // "Promise resolution is still pending but the event loop has already
+    // resolved". Node 24 masked it. Holding the loop open is bounded, because
+    // both handshakes clear this timer in a finally block.
   })
   // The race leaves this promise rejected and unobserved once the handshake
   // wins, which Node reports as an unhandled rejection. Observe it here.
