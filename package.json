@@ -67,12 +67,15 @@
     "kxco-post-quantum": "^1.6.0"
   },
   "scripts": {
-    "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js",
+    "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js test/property.test.js",
     "evidence": "node scripts/build-evidence.mjs"
   },
   "funding": "https://kxco.ai",
   "publishConfig": {
     "provenance": true,
     "access": "public"
+  },
+  "devDependencies": {
+    "fast-check": "4.10.2"
   }
 }
