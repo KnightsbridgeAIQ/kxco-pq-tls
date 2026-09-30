@@ -19,6 +19,12 @@
  * If mutual auth requested, after key establishment both sides exchange a
  * Finished frame (sent encrypted over the new session) containing their
  * ML-DSA-65 identity public key and a signature over SHA-256(clientHello||serverHello).
+ * A responder holding an identity requires the request: it refuses a
+ * ClientHello without the flag before answering it.
+ *
+ * The verified peer key is returned as `peerPublicKey`. A valid signature
+ * proves the peer holds the private half of the key it sent, not which key
+ * that is, so `options.peerPublicKey` pins the key the peer must prove.
  *
  * Finished plaintext (5262 bytes):
  *   [1]    msg_type = 0x01
@@ -69,7 +75,9 @@ function withDeadline(ms) {
         'connection and then did not send the frame this side was waiting ' +
         'for. The usual cause is a configuration mismatch: this side was ' +
         'given an identity and the peer was not, so the peer completed its ' +
-        'handshake and never sent a Finished frame. A peer speaking a ' +
+        'handshake and never sent a Finished frame, or the peer was given ' +
+        'one and this side was not, so the peer refused the handshake and ' +
+        'left the connection open. A peer speaking a ' +
         'different protocol fails earlier and differently, with a version or ' +
         'length error rather than this.',
         ERR_HANDSHAKE_TIMEOUT,
@@ -103,9 +111,13 @@ const FINISHED_SIZE     = 5262   // 1 + 1952 + 3309
  * send(buf)  → Promise<void>   — write one framed message
  * recv(n)    → Promise<Buffer> — read exactly n bytes (stream) or one message (WS)
  * options.identity → optional { publicKey, secretKey } (ML-DSA-65) for mutual auth
+ * options.peerPublicKey: optional ML-DSA-65 public key the peer must prove
  * Returns { txKey, rxKey } — tx is initiator→responder (C2S), rx is S2C
+ * The result also carries peerPublicKey, the key the peer proved, or undefined
+ * without mutual auth.
  */
 export async function initiatorHandshake(send, recv, options = {}) {
+  checkPinnedKeyOption(options)
   const deadline = withDeadline(options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS)
   try {
     const kem  = generateKemKeypair()
@@ -126,15 +138,17 @@ export async function initiatorHandshake(send, recv, options = {}) {
     const salt  = concat(dh.publicKey, serverX25519)
     const { keyC2S, keyS2C } = deriveKeys(ssKem, ssDh, salt)
 
+    let peerPublicKey
     if (options.identity) {
       const transcript = sha256.create()
         .update(clientHello).update(serverHello).digest()
-      await exchangeFinished(
+      peerPublicKey = await exchangeFinished(
         send, recv, keyC2S, keyS2C, options.identity, transcript, 'initiator', deadline,
       )
+      checkPinnedKey(peerPublicKey, options.peerPublicKey, 'initiator')
     }
 
-    return { txKey: keyC2S, rxKey: keyS2C }
+    return { txKey: keyC2S, rxKey: keyS2C, peerPublicKey }
   } finally {
     deadline.done()
   }
@@ -143,14 +157,22 @@ export async function initiatorHandshake(send, recv, options = {}) {
 /**
  * Perform handshake as responder.
  * Returns { txKey, rxKey } — tx is responder→initiator (S2C), rx is C2S
+ * The result also carries peerPublicKey, as for the initiator.
  */
 export async function responderHandshake(send, recv, options = {}) {
+  checkPinnedKeyOption(options)
   const deadline = withDeadline(options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS)
   try {
     const clientHello = await deadline.guard(recv(CLIENT_HELLO_SIZE))
     validateHello(clientHello, CLIENT_HELLO_SIZE, 'ClientHello')
 
     const flags        = clientHello[1]
+    // A responder given an identity authenticates every initiator, so it does
+    // not answer one that has not asked to authenticate.
+    if (options.identity && !(flags & FLAG_AUTH))
+      throw new KxcoPqTlsError(
+        'responder: this side holds an identity and the initiator did not request mutual authentication',
+      )
     const clientKemEk  = clientHello.slice(2, 2 + 1184)
     const clientX25519 = clientHello.slice(2 + 1184)
 
@@ -163,15 +185,17 @@ export async function responderHandshake(send, recv, options = {}) {
     const serverHello = buildServerHello(flags, ciphertext, dh.publicKey)
     await deadline.guard(send(serverHello))
 
+    let peerPublicKey
     if ((flags & FLAG_AUTH) && options.identity) {
       const transcript = sha256.create()
         .update(clientHello).update(serverHello).digest()
-      await exchangeFinished(
+      peerPublicKey = await exchangeFinished(
         send, recv, keyS2C, keyC2S, options.identity, transcript, 'responder', deadline,
       )
+      checkPinnedKey(peerPublicKey, options.peerPublicKey, 'responder')
     }
 
-    return { txKey: keyS2C, rxKey: keyC2S }
+    return { txKey: keyS2C, rxKey: keyC2S, peerPublicKey }
   } finally {
     deadline.done()
   }
@@ -220,7 +244,7 @@ async function exchangeFinished(
   // own never sends this frame, so without a deadline the initiator sits here.
   const rxBuf     = await deadline.guard(recv(FINISHED_SIZE + 16))  // +16 GCM tag
   const plaintext = openFrame(rxKey, 0, Buffer.from(rxBuf))
-  verifyFinished(plaintext, transcript, role)
+  return verifyFinished(plaintext, transcript, role)
 }
 
 function buildFinished(identityPk, sig) {
@@ -238,6 +262,26 @@ function verifyFinished(plaintext, transcript, role) {
   const sig        = plaintext.slice(1 + 1952)
   if (!dsaVerify(identityPk, transcript, sig))
     throw new KxcoPqTlsError(`${role}: peer identity verification failed`)
+  return identityPk
+}
+
+// A pinned key is checked only in a mutual handshake, and this side asks for
+// one only when it holds an identity, so a pin without an identity would never
+// be checked. Refuse it rather than connect unverified.
+function checkPinnedKeyOption(options) {
+  if (options.peerPublicKey === undefined) return
+  if (!options.identity)
+    throw new KxcoPqTlsError(
+      'peerPublicKey needs an identity on this side too: the peer proves its key only in a mutual handshake',
+    )
+  const pk = options.peerPublicKey
+  if (!(pk instanceof Uint8Array) || pk.length !== 1952)
+    throw new KxcoPqTlsError('peerPublicKey must be a 1952-byte ML-DSA-65 public key')
+}
+
+function checkPinnedKey(peerPublicKey, pinned, role) {
+  if (pinned !== undefined && Buffer.compare(peerPublicKey, pinned) !== 0)
+    throw new KxcoPqTlsError(`${role}: the peer proved a different key from the pinned peerPublicKey`)
 }
 
 function concat(...arrays) {

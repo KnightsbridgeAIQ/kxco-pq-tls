@@ -9,6 +9,10 @@ import { KxcoPqTlsError } from './errors.js'
  *
  * options.role     — 'initiator' | 'responder'  (required)
  * options.identity — { publicKey, secretKey }    (ML-DSA-65, optional — mutual auth)
+ * options.peerPublicKey: the ML-DSA-65 public key the peer must prove (optional)
+ *
+ * The stream's peerPublicKey is the key the peer proved, or undefined without
+ * mutual auth.
  */
 export async function wrapStream(socket, options = {}) {
   if (!options.role) throw new KxcoPqTlsError('wrapStream: options.role is required')
@@ -19,12 +23,12 @@ export async function wrapStream(socket, options = {}) {
   )
   const recv = (n) => readExactly(socket, n)
 
-  const { txKey, rxKey } =
+  const { txKey, rxKey, peerPublicKey } =
     options.role === 'initiator'
       ? await initiatorHandshake(send, recv, options)
       : await responderHandshake(send, recv, options)
 
-  return new PqTlsStream(socket, txKey, rxKey)
+  return new PqTlsStream(socket, txKey, rxKey, peerPublicKey)
 }
 
 // ---------------------------------------------------------------------------
@@ -32,8 +36,9 @@ export async function wrapStream(socket, options = {}) {
 // ---------------------------------------------------------------------------
 
 class PqTlsStream extends Duplex {
-  constructor(socket, txKey, rxKey) {
+  constructor(socket, txKey, rxKey, peerPublicKey) {
     super()
+    this.peerPublicKey = peerPublicKey
     this._socket = socket
     this._txKey  = txKey
     this._rxKey  = rxKey
@@ -45,6 +50,9 @@ class PqTlsStream extends Duplex {
     socket.once('end', ()      => this.push(null))
     socket.once('error', (err) => this.destroy(err))
     this.once('finish', ()     => socket.end())
+    // The handshake reader leaves the socket paused, holding anything that
+    // arrived behind the last handshake message.
+    socket.resume()
   }
 
   _write(chunk, _enc, cb) {
@@ -54,7 +62,9 @@ class PqTlsStream extends Duplex {
     this._socket.write(Buffer.concat([hdr, ct]), cb)
   }
 
-  _read() {}  // push-based; driven by socket 'data' events
+  // Push-based, driven by socket 'data' events. _onData pauses the socket when
+  // the reader falls behind; a read means it has caught up, so resume.
+  _read() { this._socket.resume() }
 
   _onData(chunk) {
     this._buf = Buffer.concat([this._buf, chunk])
@@ -92,16 +102,25 @@ async function readExactly(socket, n) {
 
     const onData = (chunk) => {
       const needed = n - offset
+      let rest = null
       if (chunk.length <= needed) {
         chunk.copy(buf, offset)
         offset += chunk.length
       } else {
         chunk.copy(buf, offset, 0, needed)
-        socket.unshift(chunk.slice(needed))
+        rest = chunk.slice(needed)
         offset = n
       }
       if (offset === n) {
+        // Pause before handing anything back. On a flowing socket, unshift
+        // emits 'data' again at once, into this handler while it is still
+        // attached, and the bytes of the next message overwrite this one. And
+        // a socket left flowing between reads emits whatever arrives in that
+        // gap to no listener at all. Paused, the bytes wait in the socket for
+        // the next reader, or the channel, which resumes it.
         cleanup()
+        socket.pause()
+        if (rest) socket.unshift(rest)
         resolve(buf)
       }
     }
@@ -112,5 +131,6 @@ async function readExactly(socket, n) {
     socket.on('data',  onData)
     socket.once('error', onError)
     socket.once('end',   onEnd)
+    socket.resume()
   })
 }

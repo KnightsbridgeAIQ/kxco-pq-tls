@@ -12,19 +12,34 @@ import { KxcoPqTlsError } from './errors.js'
  *
  * options.role     — 'initiator' | 'responder'  (required)
  * options.identity — { publicKey, secretKey }    (ML-DSA-65, optional — mutual auth)
+ * options.peerPublicKey: the ML-DSA-65 public key the peer must prove (optional)
+ *
+ * The channel's peerPublicKey is the key the peer proved, or undefined without
+ * mutual auth.
  */
 export async function wrapWebSocket(ws, options = {}) {
   if (!options.role) throw new KxcoPqTlsError('wrapWebSocket: options.role is required')
 
+  const inbox = handshakeInbox(ws)
   const send = (data) => wsSend(ws, data)
-  const recv = ()     => wsRecv(ws)
+  const recv = ()     => inbox.next()
 
-  const { txKey, rxKey } =
-    options.role === 'initiator'
+  let keys
+  try {
+    keys = options.role === 'initiator'
       ? await initiatorHandshake(send, recv, options)
       : await responderHandshake(send, recv, options)
+  } finally {
+    inbox.stop()
+  }
 
-  return new PqTlsWebSocket(ws, txKey, rxKey)
+  const channel = new PqTlsWebSocket(ws, keys.txKey, keys.rxKey, keys.peerPublicKey)
+  // A message can arrive in the same turn as the last handshake message,
+  // before the caller has attached a listener to the channel it is about to
+  // receive. Hold it until the caller's code after `await wrapWebSocket()` has
+  // run, then deliver it, ahead of anything that arrives meanwhile.
+  if (inbox.queue.length) channel._deliverLater(inbox.queue)
+  return channel
 }
 
 // ---------------------------------------------------------------------------
@@ -32,21 +47,19 @@ export async function wrapWebSocket(ws, options = {}) {
 // ---------------------------------------------------------------------------
 
 export class PqTlsWebSocket extends EventEmitter {
-  constructor(ws, txKey, rxKey) {
+  constructor(ws, txKey, rxKey, peerPublicKey) {
     super()
+    this.peerPublicKey = peerPublicKey
     this._ws    = ws
     this._txKey = txKey
     this._rxKey = rxKey
     this._txSeq = 0
     this._rxSeq = 0
+    this._held  = null  // messages waiting for _deliverLater, in arrival order
 
     const onMsg = (data) => {
-      try {
-        const plain = openFrame(this._rxKey, this._rxSeq++, toBuffer(data))
-        this.emit('message', Buffer.from(plain))
-      } catch (err) {
-        this.emit('error', err)
-      }
+      if (this._held) this._held.push(data)
+      else this._receive(data)
     }
 
     const onClose  = (code, reason) => this.emit('close', code, reason)
@@ -62,6 +75,24 @@ export class PqTlsWebSocket extends EventEmitter {
       ws.addEventListener('close',   (e) => this.emit('close', e.code, e.reason))
       ws.addEventListener('error',   (e) => this.emit('error', e))
     }
+  }
+
+  _receive(data) {
+    try {
+      const plain = openFrame(this._rxKey, this._rxSeq++, toBuffer(data))
+      this.emit('message', Buffer.from(plain))
+    } catch (err) {
+      this.emit('error', err)
+    }
+  }
+
+  _deliverLater(messages) {
+    this._held = messages
+    setTimeout(() => {
+      const held = this._held
+      this._held = null
+      for (const data of held) this._receive(data)
+    }, 0)
   }
 
   send(data) {
@@ -94,14 +125,53 @@ function wsSend(ws, data) {
   })
 }
 
-function wsRecv(ws) {
-  return new Promise((resolve, reject) => {
-    const onMsg   = (data)  => { cleanup(); resolve(toBuffer(data)) }
-    const onClose = ()      => { cleanup(); reject(new KxcoPqTlsError('WebSocket closed during handshake')) }
-    const onError = (err)   => { cleanup(); reject(err) }
+// Every message that arrives during the handshake, in order. One listener for
+// the whole handshake, because a listener added per read misses a message that
+// arrives in the same turn as the one before it, as a responder's ServerHello
+// and Finished do. A close or error fails the read waiting now and every read
+// after the messages already queued.
+function handshakeInbox(ws) {
+  const queue = []
+  let waiting = null
+  let failure = null
 
-    const cleanup = () => {
-      if (typeof ws.off === 'function') {
+  const onMsg = (data) => {
+    if (!waiting) { queue.push(data); return }
+    const { resolve } = waiting
+    waiting = null
+    resolve(toBuffer(data))
+  }
+  const onFail = (err) => {
+    failure = err
+    if (!waiting) return
+    const { reject } = waiting
+    waiting = null
+    reject(err)
+  }
+  const onClose     = ()    => onFail(new KxcoPqTlsError('WebSocket closed during handshake'))
+  const onError     = (err) => onFail(err)
+  const onMsgNative = (e)   => onMsg(e.data)
+
+  const emitter = typeof ws.on === 'function'
+  if (emitter) {
+    ws.on('message', onMsg)
+    ws.on('close',   onClose)
+    ws.on('error',   onError)
+  } else {
+    ws.addEventListener('message', onMsgNative)
+    ws.addEventListener('close',   onClose)
+    ws.addEventListener('error',   onError)
+  }
+
+  return {
+    queue,
+    next() {
+      if (queue.length) return Promise.resolve(toBuffer(queue.shift()))
+      if (failure) return Promise.reject(failure)
+      return new Promise((resolve, reject) => { waiting = { resolve, reject } })
+    },
+    stop() {
+      if (emitter) {
         ws.off('message', onMsg)
         ws.off('close',   onClose)
         ws.off('error',   onError)
@@ -110,20 +180,8 @@ function wsRecv(ws) {
         ws.removeEventListener('close',   onClose)
         ws.removeEventListener('error',   onError)
       }
-    }
-
-    const onMsgNative = (e) => onMsg(e.data)
-
-    if (typeof ws.once === 'function') {
-      ws.once('message', onMsg)
-      ws.once('close',   onClose)
-      ws.once('error',   onError)
-    } else {
-      ws.addEventListener('message', onMsgNative, { once: true })
-      ws.addEventListener('close',   onClose,     { once: true })
-      ws.addEventListener('error',   onError,     { once: true })
-    }
-  })
+    },
+  }
 }
 
 function toBuffer(data) {
