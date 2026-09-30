@@ -20,6 +20,11 @@ import { KxcoPqTlsError } from './errors.js'
 export async function wrapWebSocket(ws, options = {}) {
   if (!options.role) throw new KxcoPqTlsError('wrapWebSocket: options.role is required')
 
+  // A native WebSocket hands over binary messages as a Blob by default, which
+  // cannot be read in order without waiting on each one. Ask for ArrayBuffers.
+  // The ws package defaults to Buffers and is left as it is.
+  if (ws.binaryType === 'blob') ws.binaryType = 'arraybuffer'
+
   const inbox = handshakeInbox(ws)
   const send = (data) => wsSend(ws, data)
   const recv = ()     => inbox.next()
@@ -29,6 +34,14 @@ export async function wrapWebSocket(ws, options = {}) {
     keys = options.role === 'initiator'
       ? await initiatorHandshake(send, recv, options)
       : await responderHandshake(send, recv, options)
+  } catch (err) {
+    // Nothing more can be said on this connection. Closing it tells the peer
+    // now, rather than at its own deadline. A peer that ignores the close is
+    // then cut off by the WebSocket's own close timeout (30 seconds in the ws
+    // package). A WebSocket already closing may refuse to close again, which
+    // changes nothing, so the handshake's own error is the one reported.
+    try { ws.close() } catch {}
+    throw err
   } finally {
     inbox.stop()
   }
@@ -53,8 +66,10 @@ export class PqTlsWebSocket extends EventEmitter {
     this._ws    = ws
     this._txKey = txKey
     this._rxKey = rxKey
-    this._txSeq = 0
-    this._rxSeq = 0
+    // A mutual handshake sent its Finished frames as sequence 0 under these
+    // keys, so records then start at 1 and no GCM nonce is used twice.
+    this._txSeq = peerPublicKey === undefined ? 0 : 1
+    this._rxSeq = this._txSeq
     this._held  = null  // messages waiting for _deliverLater, in arrival order
 
     const onMsg = (data) => {

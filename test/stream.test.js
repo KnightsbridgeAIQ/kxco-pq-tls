@@ -4,10 +4,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
-import { Writable } from 'node:stream'
+import { Duplex, Writable } from 'node:stream'
 import { mlDsa } from 'kxco-post-quantum'
 import { wrapStream } from '../src/stream.js'
-import { KxcoPqTlsError } from '../src/errors.js'
+import { responderHandshake } from '../src/handshake.js'
+import { openFrame } from '../src/primitives.js'
+import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
 
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
@@ -313,4 +315,98 @@ test('wrapStream: pipe into a slow writable delivers all of 1 MiB', async (t) =>
   client.end()
   await within(5000, () => `the pipe stopped at ${got} of 1048576 bytes`, finished)
   assert.equal(got, 1048576)
+})
+
+// ---------------------------------------------------------------------------
+// Record nonces after mutual authentication
+// ---------------------------------------------------------------------------
+
+test('wrapStream: after mutual authentication the first record does not reuse the Finished nonce', async () => {
+  // Everything the initiator writes, as the network sees it. If the first
+  // record were sealed under the same key and nonce as the Finished frame, the
+  // two ciphertexts XORed with the Finished frame's known opening (message
+  // type and the initiator's public key) would give back the record.
+  const wire = []
+  let a = null
+  let b = null
+  a = new Duplex({ read() {}, write(c, _e, cb) { wire.push(Buffer.from(c)); b.push(c); cb() }, final(cb) { b.push(null); cb() } })
+  b = new Duplex({ read() {}, write(c, _e, cb) { a.push(c); cb() }, final(cb) { a.push(null); cb() } })
+  const [client, server] = await Promise.all([
+    wrapStream(a, { role: 'initiator', identity: initId }),
+    wrapStream(b, { role: 'responder', identity: respId }),
+  ])
+  const secret = Buffer.alloc(256, 0x5a)
+  const received = new Promise((res) => server.once('data', res))
+  client.write(secret)
+  assert.ok((await received).equals(secret))
+
+  const all = Buffer.concat(wire)
+  const finished = all.subarray(1218, 1218 + 5278)
+  const record = all.subarray(1218 + 5278 + 4)
+  const opening = Buffer.concat([Buffer.from([0x01]), Buffer.from(initId.publicKey)])
+  const guess = Buffer.alloc(secret.length)
+  for (let i = 0; i < guess.length; i++) guess[i] = finished[i] ^ record[i] ^ opening[i]
+  assert.ok(!guess.equals(secret), 'the first record shares a key stream with the Finished frame')
+  client.end()
+  server.end()
+})
+
+test('wrapStream: records start at sequence 0 without identities, as in 1.2.3, and at 1 after mutual authentication', async () => {
+  // The responder here is the low-level handshake reading records off the wire
+  // itself, so the record layout without identities is pinned to what 1.2.3
+  // sends and reads.
+  for (const identity of [undefined, respId]) {
+    let a = null
+    let b = null
+    let got = Buffer.alloc(0)
+    let wake = null
+    a = new Duplex({ read() {}, write(c, _e, cb) { got = Buffer.concat([got, c]); if (wake) wake(); cb() }, final(cb) { cb() } })
+    b = new Duplex({ read() {}, write(c, _e, cb) { a.push(c); cb() }, final(cb) { a.push(null); cb() } })
+    const readN = async (n) => {
+      while (got.length < n) await new Promise((res) => { wake = res })
+      const out = got.subarray(0, n)
+      got = got.subarray(n)
+      return Buffer.from(out)
+    }
+    const [client, keys] = await Promise.all([
+      wrapStream(a, { role: 'initiator', ...(identity && { identity: initId }) }),
+      responderHandshake((d) => new Promise((res) => b.write(Buffer.from(d), res)), readN, { identity }),
+    ])
+    client.write('first record')
+    const len = (await readN(4)).readUInt32BE(0)
+    const record = await readN(len)
+    const seq = identity ? 1 : 0
+    assert.equal(Buffer.from(openFrame(keys.rxKey, seq, record)).toString(), 'first record',
+      `${identity ? 'with' : 'without'} identities the first record is sequence ${seq}`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// A failed handshake closes the connection
+// ---------------------------------------------------------------------------
+
+test('wrapStream: a refused initiator sees the connection close at once, not at its deadline', async (t) => {
+  // No application code closes anything here: the responder's own failure does.
+  const [c, s] = await pairFor(t)
+  const started = Date.now()
+  const [client, server] = await Promise.all([
+    outcome(wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 5000 })),
+    outcome(wrapStream(s, { role: 'responder', identity: respId, handshakeTimeoutMs: 5000 })),
+  ])
+  const elapsed = Date.now() - started
+  assert.ok(server.error instanceof KxcoPqTlsError, 'the server refuses')
+  assert.ok(client.error, 'the client does not complete')
+  assert.notEqual(client.error.code, ERR_HANDSHAKE_TIMEOUT, 'the client learns of it from the close, not its deadline')
+  assert.ok(elapsed < 2000, `the client waited ${elapsed}ms`)
+})
+
+test('wrapStream: a handshake that runs out of time closes the connection', async (t) => {
+  // The server end is a bare socket that accepts and never answers.
+  const [c, s] = await pairFor(t)
+  const closed = new Promise((res) => { s.once('end', res); s.once('close', res) })
+  s.resume()
+  const err = await wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 200 }).then(
+    () => { throw new Error('expected a timeout') }, (e) => e)
+  assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
+  await within(2000, () => 'the connection is still open', closed)
 })

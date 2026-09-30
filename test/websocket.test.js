@@ -13,7 +13,7 @@ import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mlDsa } from 'kxco-post-quantum'
 import { wrapWebSocket } from '../src/websocket.js'
-import { KxcoPqTlsError } from '../src/errors.js'
+import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
 
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
@@ -234,4 +234,57 @@ test('wrapWebSocket: a responder holding an identity refuses an initiator withou
   // The close reaches the client while it waits for the ServerHello.
   assert.ok(client.error instanceof KxcoPqTlsError, 'the client does not complete')
   assert.match(client.error.message, /closed during handshake/)
+})
+
+test('wrapWebSocket: a native WebSocket left at its default binaryType completes the handshake', {
+  skip: typeof globalThis.WebSocket !== 'function' && 'this runtime has no global WebSocket',
+}, async (t) => {
+  // A native WebSocket delivers binary messages as a Blob unless told otherwise.
+  const { port, accepted } = await wsServer(t)
+  const native = new globalThis.WebSocket(`ws://127.0.0.1:${port}`)
+  await new Promise((res, rej) => {
+    native.addEventListener('open', res, { once: true })
+    native.addEventListener('error', rej, { once: true })
+  })
+  const [client] = await Promise.all([
+    wrapWebSocket(native, { role: 'initiator', handshakeTimeoutMs: 3000 }),
+    accepted.then((s) => wrapWebSocket(s, { role: 'responder', handshakeTimeoutMs: 3000 }))
+      .then((server) => server.send(Buffer.from('greeting'))),
+  ])
+  const greeting = await within(3000, 'no greeting', nextMessage(client))
+  assert.equal(greeting.toString(), 'greeting')
+  assert.equal(native.binaryType, 'arraybuffer')
+
+  const closed = new Promise((res) => native.addEventListener('close', res, { once: true }))
+  client.close()
+  await closed
+})
+
+// ---------------------------------------------------------------------------
+// A failed handshake closes the WebSocket
+// ---------------------------------------------------------------------------
+
+test('wrapWebSocket: a refused initiator sees the WebSocket close at once, not at its deadline', async (t) => {
+  // No application code closes anything here: the responder's own failure does.
+  const [c, s] = await wsPair(t)
+  const started = Date.now()
+  const [client, server] = await Promise.all([
+    outcome(wrapWebSocket(c, { role: 'initiator', handshakeTimeoutMs: 5000 })),
+    outcome(wrapWebSocket(s, { role: 'responder', identity: respId, handshakeTimeoutMs: 5000 })),
+  ])
+  const elapsed = Date.now() - started
+  assert.ok(server.error instanceof KxcoPqTlsError, 'the server refuses')
+  assert.ok(client.error instanceof KxcoPqTlsError, 'the client does not complete')
+  assert.match(client.error.message, /closed during handshake/)
+  assert.ok(elapsed < 2000, `the client waited ${elapsed}ms`)
+})
+
+test('wrapWebSocket: a handshake that runs out of time closes the WebSocket', async (t) => {
+  // The server end never answers.
+  const [c, s] = await wsPair(t)
+  const closed = new Promise((res) => s.once('close', res))
+  const err = await wrapWebSocket(c, { role: 'initiator', handshakeTimeoutMs: 200 }).then(
+    () => { throw new Error('expected a timeout') }, (e) => e)
+  assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
+  await within(2000, 'the WebSocket is still open', closed)
 })

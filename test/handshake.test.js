@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initiatorHandshake, responderHandshake } from '../src/handshake.js'
 import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
+import { sealFrame, openFrame } from '../src/primitives.js'
 import { mlDsa } from 'kxco-post-quantum'
 
 // Generate once and reuse across auth tests — keygen is the expensive step
@@ -281,6 +282,68 @@ test('a pinned peer key needs an identity on this side, and must be an ML-DSA-65
     initiatorHandshake(async () => {}, never, { identity: initId, peerPublicKey: Buffer.from('ab'), handshakeTimeoutMs: 300 }),
     (err) => err instanceof KxcoPqTlsError && /1952-byte/.test(err.message),
   )
+})
+
+// A responder with no identity that completes the key exchange, then sends the
+// initiator's own Finished frame back, sealed in its own direction.
+async function reflectingResponder(ch) {
+  const keys = await responderHandshake(ch.responderSend, ch.responderRecv, {})
+  const theirs = openFrame(keys.rxKey, 0, Buffer.from(await ch.responderRecv()))
+  await ch.responderSend(Buffer.from(sealFrame(keys.txKey, 0, theirs)))
+}
+
+// An initiator that asks for mutual authentication, keeps its own Finished
+// frame back, and sends the responder's Finished frame back to it instead.
+async function reflectingInitiator(ch, identity) {
+  let responderFinished
+  let sent = 0
+  const send = (data) => (++sent === 2 ? Promise.resolve() : ch.initiatorSend(data))
+  const recv = async () => {
+    const msg = await ch.initiatorRecv()
+    responderFinished = msg
+    return msg
+  }
+  const keys = await initiatorHandshake(send, recv, { identity })
+  const theirs = openFrame(keys.rxKey, 0, Buffer.from(responderFinished))
+  await ch.initiatorSend(Buffer.from(sealFrame(keys.txKey, 0, theirs)))
+}
+
+test('a Finished frame sent back to the side that signed it is refused, with a shared key too', async () => {
+  const t = { handshakeTimeoutMs: 2000 }
+
+  // To an initiator, from a responder that holds no key.
+  let ch = makeInMemoryChannel()
+  let [init] = await Promise.all([
+    outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: initId, ...t })),
+    outcome(reflectingResponder(ch)),
+  ])
+  assert.ok(init.error instanceof KxcoPqTlsError, 'the initiator refuses its own Finished frame')
+
+  // Both ends share one identity and pin it: the peer's key is the same key,
+  // so only the signature's role can tell a reflection apart.
+  const shared = initId
+  ch = makeInMemoryChannel()
+  ;[init] = await Promise.all([
+    outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: shared, peerPublicKey: shared.publicKey, ...t })),
+    outcome(reflectingResponder(ch)),
+  ])
+  assert.ok(init.error instanceof KxcoPqTlsError, 'a pinned shared-key initiator refuses its own Finished frame')
+
+  ch = makeInMemoryChannel()
+  const [resp] = await Promise.all([
+    outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: shared, peerPublicKey: shared.publicKey, ...t })),
+    outcome(reflectingInitiator(ch, relayId)),
+  ])
+  assert.ok(resp.error instanceof KxcoPqTlsError, 'a pinned shared-key responder refuses its own Finished frame')
+
+  // A real shared-key pair still completes.
+  ch = makeInMemoryChannel()
+  const [i2, r2] = await Promise.all([
+    initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: shared, peerPublicKey: shared.publicKey }),
+    responderHandshake(ch.responderSend, ch.responderRecv, { identity: shared, peerPublicKey: shared.publicKey }),
+  ])
+  assert.deepEqual(i2.txKey, r2.rxKey)
+  assert.ok(sameKey(i2.peerPublicKey, shared.publicKey))
 })
 
 test('handshakeTimeoutMs: 0 restores the unbounded wait', async () => {

@@ -23,12 +23,20 @@ export async function wrapStream(socket, options = {}) {
   )
   const recv = (n) => readExactly(socket, n)
 
-  const { txKey, rxKey, peerPublicKey } =
-    options.role === 'initiator'
+  let keys
+  try {
+    keys = options.role === 'initiator'
       ? await initiatorHandshake(send, recv, options)
       : await responderHandshake(send, recv, options)
+  } catch (err) {
+    // Nothing more can be said on this connection. Closing it tells the peer
+    // now, rather than at its own deadline, and a peer that stalls or is
+    // refused cannot keep it open.
+    socket.destroy()
+    throw err
+  }
 
-  return new PqTlsStream(socket, txKey, rxKey, peerPublicKey)
+  return new PqTlsStream(socket, keys.txKey, keys.rxKey, keys.peerPublicKey)
 }
 
 // ---------------------------------------------------------------------------
@@ -42,8 +50,10 @@ class PqTlsStream extends Duplex {
     this._socket = socket
     this._txKey  = txKey
     this._rxKey  = rxKey
-    this._txSeq  = 0
-    this._rxSeq  = 0
+    // A mutual handshake sent its Finished frames as sequence 0 under these
+    // keys, so records then start at 1 and no GCM nonce is used twice.
+    this._txSeq  = peerPublicKey === undefined ? 0 : 1
+    this._rxSeq  = this._txSeq
     this._buf    = Buffer.alloc(0)
 
     socket.on('data',  (chunk) => this._onData(chunk))

@@ -50,6 +50,10 @@ export interface HandshakeOptions {
 }
 
 export interface SessionKeys {
+  /**
+   * After mutual authentication, each side's Finished frame was sealed under
+   * these keys as sequence 0. A record layer of your own starts at 1.
+   */
   txKey: Uint8Array
   rxKey: Uint8Array
   /** The ML-DSA-65 public key the peer proved, or `undefined` without mutual authentication. */
@@ -64,7 +68,8 @@ export interface PqTlsStream extends Duplex {
 
 /**
  * Wrap a Node.js Duplex stream (e.g. `net.Socket`) with a post-quantum secure
- * channel. Resolves once the handshake completes.
+ * channel. Resolves once the handshake completes. If the handshake fails, the
+ * socket is destroyed before the promise rejects.
  *
  * Key exchange: ML-KEM-768 + X25519. Session encryption: AES-256-GCM.
  * Optional mutual auth via ML-DSA-65 Finished frames.
@@ -73,7 +78,9 @@ export function wrapStream(socket: Duplex, options: ChannelOptions): Promise<PqT
 
 /**
  * Wrap a WebSocket (native API or `ws` package) with a post-quantum secure
- * channel. Resolves once the handshake completes.
+ * channel. Resolves once the handshake completes. If the handshake fails, the
+ * WebSocket is closed before the promise rejects. A native WebSocket whose
+ * `binaryType` is `'blob'` is switched to `'arraybuffer'`.
  */
 export function wrapWebSocket(ws: unknown, options: ChannelOptions): Promise<PqTlsWebSocket>
 

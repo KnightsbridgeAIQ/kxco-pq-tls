@@ -18,7 +18,11 @@
  *
  * If mutual auth requested, after key establishment both sides exchange a
  * Finished frame (sent encrypted over the new session) containing their
- * ML-DSA-65 identity public key and a signature over SHA-256(clientHello||serverHello).
+ * ML-DSA-65 identity public key and a signature over
+ * SHA-256(label || SHA-256(clientHello||serverHello)), where the label names the
+ * side that signs: "kxco-pq-tls-v1-finished-initiator" or
+ * "kxco-pq-tls-v1-finished-responder". A Finished frame is therefore never
+ * valid in the other direction, even between two ends that share one key.
  * A responder holding an identity requires the request: it refuses a
  * ClientHello without the flag before answering it.
  *
@@ -29,7 +33,7 @@
  * Finished plaintext (5262 bytes):
  *   [1]    msg_type = 0x01
  *   [1952] ML-DSA-65 public key
- *   [3309] ML-DSA-65 signature over SHA-256(clientHello || serverHello)
+ *   [3309] ML-DSA-65 signature over SHA-256(label || SHA-256(clientHello || serverHello))
  */
 
 import {
@@ -43,6 +47,13 @@ import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from './errors.js'
 const VERSION      = 0x01
 const FLAG_AUTH    = 0x01
 const MSG_FINISHED = 0x01
+
+// What each side signs names that side, so a Finished frame sent back to the
+// side that made it does not verify as the other side's.
+const FINISHED_LABEL = {
+  initiator: new TextEncoder().encode('kxco-pq-tls-v1-finished-initiator'),
+  responder: new TextEncoder().encode('kxco-pq-tls-v1-finished-responder'),
+}
 
 /**
  * A handshake is four small messages and a few milliseconds of arithmetic. It
@@ -236,7 +247,7 @@ async function exchangeFinished(
 ) {
   // Send our Finished first, then receive theirs.
   // The encrypted sequence starts at 0 for each direction.
-  const sig      = dsaSign(identity.secretKey, transcript)
+  const sig      = dsaSign(identity.secretKey, finishedDigest(role, transcript))
   const finished = buildFinished(identity.publicKey, sig)
   await deadline.guard(send(sealFrame(txKey, 0, finished)))
 
@@ -244,7 +255,12 @@ async function exchangeFinished(
   // own never sends this frame, so without a deadline the initiator sits here.
   const rxBuf     = await deadline.guard(recv(FINISHED_SIZE + 16))  // +16 GCM tag
   const plaintext = openFrame(rxKey, 0, Buffer.from(rxBuf))
-  return verifyFinished(plaintext, transcript, role)
+  const peer = role === 'initiator' ? 'responder' : 'initiator'
+  return verifyFinished(plaintext, finishedDigest(peer, transcript), role)
+}
+
+function finishedDigest(signer, transcript) {
+  return sha256.create().update(FINISHED_LABEL[signer]).update(transcript).digest()
 }
 
 function buildFinished(identityPk, sig) {
@@ -255,12 +271,12 @@ function buildFinished(identityPk, sig) {
   return buf
 }
 
-function verifyFinished(plaintext, transcript, role) {
+function verifyFinished(plaintext, signed, role) {
   if (plaintext[0] !== MSG_FINISHED)
     throw new KxcoPqTlsError('unexpected finished message type')
   const identityPk = plaintext.slice(1, 1 + 1952)
   const sig        = plaintext.slice(1 + 1952)
-  if (!dsaVerify(identityPk, transcript, sig))
+  if (!dsaVerify(identityPk, signed, sig))
     throw new KxcoPqTlsError(`${role}: peer identity verification failed`)
   return identityPk
 }
