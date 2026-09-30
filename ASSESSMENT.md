@@ -26,10 +26,13 @@ recommend for transport, and it is not optional here, which means no deployment
 can accidentally end up without it.
 
 **Authentication is mutual and key-based.** With an `identity`, both ends sign
-`SHA-256(clientHello || serverHello)` with ML-DSA-65 and exchange the signature
-inside the encrypted session. Each side proves which key it holds, not which
-certificate some authority was willing to sign. There is no anonymous
-connection in that mode and no certificate authority in the path.
+their own role label and `SHA-256(clientHello || serverHello)` with ML-DSA-65
+and exchange the signature inside the encrypted session, so a signature sent
+back to its signer is refused. Each side proves it holds its key, and with the
+peer's key pinned in `peerPublicKey` it proves which key that is, not which
+certificate some authority was willing to sign. A side holding an identity
+never completes an anonymous connection, and there is no certificate authority
+in the path.
 
 **The transcript is covered.** The flags byte lives inside the ClientHello and
 the ClientHello is inside the signed transcript, so an active attacker who

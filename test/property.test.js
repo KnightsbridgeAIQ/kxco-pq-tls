@@ -157,3 +157,30 @@ test('stream: a record replayed, dropped or reordered is refused, and nothing fr
     return error instanceof KxcoPqTlsError && data.equals(joined(msgs.slice(0, intact)))
   }), RUNS)
 })
+
+test('stream: a message of exactly 16 KiB, the stream high-water mark, arrives and the stream then ends', async () => {
+  const { client, server } = await connect()
+  let got = 0
+  server.on('data', (d) => { got += d.length })
+  const received = drain(server)
+  client.end(Buffer.alloc(16384, 0x61))
+  let timer
+  const stalled = new Promise((resolve) => { timer = setTimeout(() => resolve(null), 3000) })
+  const result = await Promise.race([received, stalled])
+  clearTimeout(timer)
+  assert.ok(result, `stalled after ${got} of 16384 bytes with no end`)
+  assert.equal(result.error, null)
+  assert.equal(result.data.length, 16384)
+})
+
+test('stream: a message of any length sent after the handshake arrives intact, and the stream then ends', async () => {
+  // Up to eight times the stream's 16 KiB high-water mark.
+  const message = fc.uint8Array({ maxLength: 128 * 1024, size: 'max' })
+  await fc.assert(fc.asyncProperty(message, async (m) => {
+    const { client, server } = await connect()
+    const received = drain(server)
+    client.end(Buffer.from(m))
+    const { data, error } = await received
+    return error === null && data.equals(Buffer.from(m))
+  }), RUNS)
+})

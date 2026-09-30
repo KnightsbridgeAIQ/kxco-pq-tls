@@ -1,7 +1,7 @@
 {
   "name": "kxco-pq-tls",
-  "version": "1.2.3",
-  "description": "Post-quantum encrypted channels for Node.js streams and WebSockets. ML-KEM-768 key exchange (FIPS 203) with ML-DSA-65 mutual authentication (FIPS 204), so a recorded session stays closed to a quantum adversary.",
+  "version": "1.2.4",
+  "description": "Post-quantum encrypted channels for Node.js streams and WebSockets. Hybrid ML-KEM-768 (NIST FIPS 203) and X25519 key exchange, so a recorded session stays closed unless both are broken, with AES-256-GCM records and optional ML-DSA-65 identity keys.",
   "keywords": [
     "post-quantum",
     "pqc",
@@ -20,7 +20,14 @@
     "node-stream",
     "mutual-auth",
     "end-to-end-encryption",
-    "encrypted-channel"
+    "encrypted-channel",
+    "pqc-migration",
+    "harvest-now-decrypt-later",
+    "crypto-agility",
+    "hybrid-key-exchange",
+    "x25519mlkem768",
+    "data-in-transit",
+    "ml-dsa"
   ],
   "license": "Apache-2.0",
   "author": "Shayne Heffernan and John Heffernan",
@@ -52,6 +59,7 @@
   },
   "files": [
     "LICENSE",
+    "NOTICE",
     "README.md",
     "TLS.md",
     "src",
@@ -67,7 +75,7 @@
     "kxco-post-quantum": "^1.6.0"
   },
   "scripts": {
-    "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js test/property.test.js",
+    "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js test/websocket.test.js test/property.test.js",
     "evidence": "node scripts/build-evidence.mjs"
   },
   "funding": "https://kxco.ai",

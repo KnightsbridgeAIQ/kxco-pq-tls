@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.2.4
+
+Mutual authentication completes over TCP sockets and WebSockets. The stream
+reader keeps a handshake message that arrives together with the next one, and
+`wrapWebSocket` keeps every message that arrives during the handshake.
+
+The channel exposes `peerPublicKey`, the ML-DSA-65 key the peer proved, or
+`undefined` without mutual authentication, and the `peerPublicKey` option pins
+the key the peer must prove. A responder holding an identity refuses an
+initiator that does not request mutual authentication.
+
+Each side's Finished signature names the side that signs. After mutual
+authentication, records start at sequence 1, because the Finished frames use
+sequence 0 under the same keys.
+
+A failed handshake closes the connection: `wrapStream` destroys the socket and
+`wrapWebSocket` closes the WebSocket. `wrapWebSocket` switches a native
+WebSocket's `binaryType` from `'blob'` to `'arraybuffer'`. The encrypted stream
+resumes its socket when read, so `pipe()`, `for await` and large messages
+deliver everything.
+
+Sessions without identities are unchanged on the wire and interoperate with
+1.2.3. Mutual authentication needs 1.2.4 at both ends.
+
+**The npm page leads with what the package proves.** The first screen now says why a
+recorded session is what a harvest-now-decrypt-later adversary keeps, in the
+words of Executive Order 14412, how the hybrid key exchange closes it, the
+evidence underneath it and the migration dates set by NIST, Executive Order
+14412, OMB M-26-15 and the UK NCSC.
+
+A family table maps every KXCO package to the job it does, and a new For
+institutions section sets out the operated services and how to reach us. The
+evidence documents are unchanged and linked from the page.
+
+The stream and WebSocket quick starts now show a message and its reply, and the
+mutual authentication example is one file with both ends.
+
+Every GitHub Action in CI is now pinned by commit SHA, as the page states.
+
+A NOTICE file names the copyright owner, Knightsbridge Financial Ltd, trading
+as KXCO, and ships in the package, so anyone who redistributes it carries the
+attribution, as section 4(d) of the Apache License requires.
+
 ## 1.2.3
 
 The handshake deadline added in 1.2.2 could not fire.
