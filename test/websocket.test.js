@@ -11,13 +11,15 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mlDsa } from 'kxco-post-quantum'
+import { mlDsa, mlDsa87 } from 'kxco-post-quantum'
 import { wrapWebSocket } from '../src/websocket.js'
 import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
 
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
 const otherId = mlDsa.ml_dsa65.keygen()
+const initId87 = mlDsa87.ml_dsa87.keygen()
+const respId87 = mlDsa87.ml_dsa87.keygen()
 
 const sameKey = (reported, publicKey) =>
   reported !== undefined && Buffer.from(reported).equals(Buffer.from(publicKey))
@@ -178,6 +180,29 @@ test('wrapWebSocket: mutual authentication, each side reporting the key the othe
   client.send(Buffer.from('reply'))
   const reply = await within(3000, 'no reply', nextMessage(server))
   assert.equal(reply.toString(), 'reply')
+})
+
+test('wrapWebSocket: ML-DSA-87 at both ends, and mixed with ML-DSA-65 in either role', async (t) => {
+  for (const [label, i, r] of [
+    ['ML-DSA-87 to ML-DSA-87', initId87, respId87],
+    ['ML-DSA-87 to ML-DSA-65', initId87, respId],
+    ['ML-DSA-65 to ML-DSA-87', initId, respId87],
+  ]) {
+    const [c, s] = await wsPair(t)
+    const [client, server] = await Promise.all([
+      wrapWebSocket(c, { role: 'initiator', identity: i, peerPublicKey: r.publicKey, handshakeTimeoutMs: 3000 }),
+      wrapWebSocket(s, { role: 'responder', identity: r, peerPublicKey: i.publicKey, handshakeTimeoutMs: 3000 })
+        .then((server) => { server.send(Buffer.from('greeting')); return server }),
+    ])
+    assert.ok(sameKey(client.peerPublicKey, r.publicKey), `${label}: the client reports the server key`)
+    assert.ok(sameKey(server.peerPublicKey, i.publicKey), `${label}: the server reports the client key`)
+
+    const greeting = await within(3000, `${label}: no greeting`, nextMessage(client))
+    assert.equal(greeting.toString(), 'greeting')
+    client.send(Buffer.from('reply'))
+    const reply = await within(3000, `${label}: no reply`, nextMessage(server))
+    assert.equal(reply.toString(), 'reply')
+  }
 })
 
 test('wrapWebSocket: mutual authentication with a native WebSocket client', {

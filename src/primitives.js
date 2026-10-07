@@ -1,4 +1,4 @@
-import { mlKem, mlDsa } from 'kxco-post-quantum'
+import { mlKem, mlDsa, mlDsa87 } from 'kxco-post-quantum'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -70,16 +70,34 @@ function seqNonce(seq) {
   return nonce
 }
 
-// ML-DSA-65 identity helpers for mutual auth
-// Wire format embeds this signature at a fixed byte offset (see FINISHED_SIZE
-// in handshake.js) — it must stay raw bytes, so we convert the wrapper's hex
-// return back to bytes rather than changing the on-the-wire shape.
-export function dsaSign(secretKey, message) {
-  return Buffer.from(mlDsa.sign(new Uint8Array(secretKey), message), 'hex')
+// The ML-DSA parameter sets an identity may sign with (FIPS 204), with their
+// sizes in bytes. A public key's length names its set, and these are the only
+// lengths accepted.
+export const ML_DSA_87 = Object.freeze({
+  name: 'ML-DSA-87', publicKey: 2592, secretKey: 4896, signature: 4627, impl: mlDsa87,
+})
+export const ML_DSA_65 = Object.freeze({
+  name: 'ML-DSA-65', publicKey: 1952, secretKey: 4032, signature: 3309, impl: mlDsa,
+})
+
+/** The parameter set a public key belongs to, or undefined for any other length. */
+export function dsaSetOf(publicKey) {
+  if (!(publicKey instanceof Uint8Array)) return undefined
+  if (publicKey.length === ML_DSA_87.publicKey) return ML_DSA_87
+  if (publicKey.length === ML_DSA_65.publicKey) return ML_DSA_65
+  return undefined
 }
 
-export function dsaVerify(publicKey, message, signature) {
-  return mlDsa.verify(new Uint8Array(publicKey), message, Buffer.from(signature).toString('hex'))
+// ML-DSA identity helpers for mutual auth
+// Wire format embeds this signature at a fixed byte offset (see finishedSize
+// in handshake.js), so it stays raw bytes: the wrapper's hex return is
+// converted back to bytes rather than changing the on-the-wire shape.
+export function dsaSign(set, secretKey, message) {
+  return Buffer.from(set.impl.sign(new Uint8Array(secretKey), message), 'hex')
+}
+
+export function dsaVerify(set, publicKey, message, signature) {
+  return set.impl.verify(new Uint8Array(publicKey), message, Buffer.from(signature).toString('hex'))
 }
 
 export { randomBytes, sha256 }

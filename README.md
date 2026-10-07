@@ -12,9 +12,10 @@
 
 Post-quantum encrypted channels for Node.js streams and WebSockets.
 
-Wraps any duplex stream or WebSocket with hybrid ML-KEM-768 (NIST FIPS 203) and X25519 key exchange and AES-256-GCM records, with optional ML-DSA-65 (NIST FIPS 204) signatures from both sides over the handshake transcript.
+Wraps any duplex stream or WebSocket with hybrid ML-KEM-768 (NIST FIPS 203) and X25519 key exchange and AES-256-GCM records, with optional ML-DSA-87 or ML-DSA-65 (NIST FIPS 204) signatures from both sides over the handshake transcript.
 
 - **Built for harvest-now, decrypt-later.** [Executive Order 14412](https://www.federalregister.gov/documents/2026/06/25/2026-12909/securing-the-nation-against-advanced-cryptographic-attacks) names adversaries "collecting United States information now, and decrypting it later once large-scale quantum computers are operational". Every session key here comes from ML-KEM-768 and X25519 together, with no mode that drops either, so a recorded session stays closed unless both are broken.
+- **Mutual authentication at ML-DSA-87.** Each end signs the handshake transcript with its own ML-DSA-87 or ML-DSA-65 key, and the two ends need not use the same set.
 - **Separate keys each way, every record authenticated.** Per-direction AES-256-GCM keys and a sequence-number nonce on each record, so a tampered, replayed or reordered frame fails authentication.
 - **A handshake completes or it reports.** `handshakeTimeoutMs` bounds the whole exchange, 30 seconds by default, and fails with a distinct error code, so a stalled peer cannot hold a connection open.
 - **Versioned on the wire.** Both hellos open with a version byte and the key schedule is labelled `kxco-pq-tls-v1`, so a future handshake version is identifiable from its first byte.
@@ -32,11 +33,11 @@ Wraps any duplex stream or WebSocket with hybrid ML-KEM-768 (NIST FIPS 203) and 
 
 ## What this is for
 
-**Post-quantum encryption over a channel you already have.** Two Node processes on a socket that is not HTTP. A WebSocket between two services you run. A duplex stream inside a private network. Give both ends an ML-DSA-65 identity and each signs the handshake transcript inside the encrypted session.
+**Post-quantum encryption over a channel you already have.** Two Node processes on a socket that is not HTTP. A WebSocket between two services you run. A duplex stream inside a private network. Give both ends an ML-DSA-87 identity and each signs the handshake transcript inside the encrypted session.
 
 **For ordinary HTTPS traffic, use TLS with the standardised hybrid group.** OpenSSL 3.5 and Node 24.7+/22.20+ negotiate `X25519MLKEM768`, which gives you record-now-decrypt-later protection at the transport layer with a configuration change and no library at all. [`TLS.md`](TLS.md) has the exact settings for Node, nginx and OpenSSL, and the one command that proves the group was negotiated on the wire.
 
-The two are complementary. TLS protects the channel and leaves nothing behind once it closes. This package brings the same hybrid key exchange, and ML-DSA-65 identity keys, to channels TLS does not reach.
+The two are complementary. TLS protects the channel and leaves nothing behind once it closes. This package brings the same hybrid key exchange, and ML-DSA-87 or ML-DSA-65 identity keys, to channels TLS does not reach.
 
 ## When to use this
 
@@ -107,15 +108,17 @@ ws.on('open', async () => {
 
 ### With mutual authentication
 
-Both sides pass an ML-DSA-65 keypair. Each signs the handshake transcript and checks the other's signature during the handshake, before any application data is exchanged.
+Both sides pass an ML-DSA keypair. Each signs the handshake transcript and checks the other's signature during the handshake, before any application data is exchanged.
+
+ML-DSA-87 and ML-DSA-65 (NIST FIPS 204) are both supported, and each side's key sets its parameter set: a 2592-byte public key is ML-DSA-87 and a 1952-byte public key is ML-DSA-65. Any other length is refused with `KxcoPqTlsError`. Use ML-DSA-87 for new identities: it is the FIPS 204 parameter set at NIST security category 5, the highest. The two sides need not match, so a server can move to ML-DSA-87 while its clients still hold ML-DSA-65 keys, and the reverse. ML-DSA-87 on either side needs 1.3.0 or later at both ends; two ML-DSA-65 ends interoperate with 1.2.4.
 
 ```js
 import net from 'node:net'
-import { mlDsa } from 'kxco-post-quantum'
+import { mlDsa87 } from 'kxco-post-quantum'
 import { wrapStream } from 'kxco-pq-tls'
 
-const serverIdentity = mlDsa.ml_dsa65.keygen()
-const clientIdentity = mlDsa.ml_dsa65.keygen()
+const serverIdentity = mlDsa87.ml_dsa87.keygen()
+const clientIdentity = mlDsa87.ml_dsa87.keygen()
 
 // Server
 net.createServer(async (socket) => {
@@ -170,8 +173,8 @@ Wraps a Node.js `Duplex` stream (e.g. `net.Socket`) with a post-quantum secure c
 ```ts
 interface ChannelOptions {
   role: 'initiator' | 'responder'
-  identity?: { publicKey: Uint8Array, secretKey: Uint8Array }  // ML-DSA-65 keypair
-  peerPublicKey?: Uint8Array    // ML-DSA-65 key the peer must prove; needs identity
+  identity?: { publicKey: Uint8Array, secretKey: Uint8Array }  // ML-DSA-87 or ML-DSA-65 keypair
+  peerPublicKey?: Uint8Array    // ML-DSA-87 or ML-DSA-65 key the peer must prove; needs identity
   handshakeTimeoutMs?: number   // total handshake deadline, default 30000, 0 disables
 }
 
@@ -269,20 +272,24 @@ Thrown on handshake failure, authentication failure, or malformed frames.
 ```
 ClientHello (1218 bytes):
   [1]    version = 0x01
-  [1]    flags   (bit 0 = mutual_auth_requested)
+  [1]    flags   (bit 0 = mutual_auth_requested,
+                  bit 1 = the initiator signs with ML-DSA-87)
   [1184] ML-KEM-768 ephemeral encapsulation key
   [32]   X25519 ephemeral public key
 
 ServerHello (1122 bytes):
   [1]    version = 0x01
-  [1]    flags
+  [1]    flags   (bits 0 and 1 echo the ClientHello,
+                  bit 2 = the responder signs with ML-DSA-87)
   [1088] ML-KEM-768 ciphertext
   [32]   X25519 ephemeral public key
 
 Session keys: HKDF(ss_kem || ss_dh, salt = c_x25519_pk || s_x25519_pk, info = "kxco-pq-tls-v1")
 ```
 
-If mutual authentication is requested, both sides exchange a `Finished` frame (encrypted under the new session keys) containing their ML-DSA-65 public key and a signature over `SHA-256(label || SHA-256(clientHello || serverHello))`, where the label is `kxco-pq-tls-v1-finished-initiator` or `kxco-pq-tls-v1-finished-responder` for the side that signs. A responder holding an identity refuses a ClientHello that does not request it.
+If mutual authentication is requested, both sides exchange a `Finished` frame (encrypted under the new session keys) containing their ML-DSA public key and a signature over `SHA-256(label || SHA-256(clientHello || serverHello))`, where the label is `kxco-pq-tls-v1-finished-initiator` or `kxco-pq-tls-v1-finished-responder` for the side that signs. A responder holding an identity refuses a ClientHello that does not request it.
+
+Each side declares its parameter set in the hello it sends, so the peer knows the size of the `Finished` frame before it decrypts it: 7220 bytes for ML-DSA-87 and 5262 for ML-DSA-65, plus a 16-byte tag. Both hellos are inside the signed transcript, so each signature also covers the set each side declared. A `Finished` frame of the wrong size for its sender's declared set is refused, a pinned `peerPublicKey` fixes the set the peer must declare, and a hello carrying a flag this version does not know is refused. With ML-DSA-65 at both ends the set flags are clear and every message has the layout and flags 1.2.4 sends.
 
 Session encryption uses AES-256-GCM with a per-message sequence number as the nonce. After mutual authentication the Finished frames take sequence 0 in each direction and records start at 1, so no nonce repeats under a key.
 
@@ -323,7 +330,7 @@ above it.
 
 ## Security
 
-**ML-DSA-65** (NIST FIPS 204) and **ML-KEM-768** (NIST FIPS 203) via [`kxco-post-quantum`](https://www.npmjs.com/package/kxco-post-quantum), running on the OpenSSL 3.5 primitives where the runtime provides them. X25519, HKDF and AES-256-GCM come from `@noble/curves`, `@noble/hashes` and `@noble/ciphers`, pinned to exact versions. No custom primitives.
+**ML-DSA-87**, **ML-DSA-65** (NIST FIPS 204) and **ML-KEM-768** (NIST FIPS 203) via [`kxco-post-quantum`](https://www.npmjs.com/package/kxco-post-quantum), running on the OpenSSL 3.5 primitives where the runtime provides them. X25519, HKDF and AES-256-GCM come from `@noble/curves`, `@noble/hashes` and `@noble/ciphers`, pinned to exact versions. No custom primitives.
 
 Evidenced, and reproducible on your own machine:
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.3.0 (2026-10-07)
+
+**ML-DSA-87 identities.** Mutual authentication takes an ML-DSA-87 or an
+ML-DSA-65 keypair (NIST FIPS 204), and ML-DSA-87 is the recommended set for new
+identities. Each side's public key sets its parameter set: 2592 bytes is
+ML-DSA-87 and 1952 bytes is ML-DSA-65. The two sides may use different sets, so
+a server can move to ML-DSA-87 while its clients still hold ML-DSA-65 keys, and
+the reverse. `peerPublicKey` takes a key of either set.
+
+Each side declares its set in a flag of the hello it sends: bit 1 of the
+ClientHello for the initiator, bit 2 of the ServerHello for the responder. The
+peer reads the Finished frame at the declared size, 7236 bytes on the wire for
+ML-DSA-87 and 5278 for ML-DSA-65. Both hellos are inside the transcript each
+side signs, so each signature covers the set each side declared. A Finished
+frame of the wrong size for its sender's declared set is refused. A pinned
+`peerPublicKey` fixes the set the peer must declare, and a peer that declares
+the other set is refused before this side signs.
+
+An identity or `peerPublicKey` of any other length is refused with
+`KxcoPqTlsError` before anything is sent, as is an identity whose secret key is
+the wrong length for its public key's set. A hello carrying a flag this version
+does not know is refused.
+
+With ML-DSA-65 at both ends the set flags are clear, and every message has the
+layout and flags 1.2.4 sends: 1.3.0 and 1.2.4 interoperate in both roles, with
+ML-DSA-65 identities and without identities. ML-DSA-87 on either side needs
+1.3.0 at both ends.
+
 ## 1.2.4
 
 Mutual authentication completes over TCP sockets and WebSockets. The stream

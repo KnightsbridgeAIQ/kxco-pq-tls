@@ -12,7 +12,7 @@ publishes the lot. Cited here, proven there.
 ## What this package is
 
 A post-quantum secure channel for Node.js streams and WebSockets, with its own
-handshake, its own record layer, and mutual ML-DSA-65 identity.
+handshake, its own record layer, and mutual ML-DSA-87 or ML-DSA-65 identity.
 
 Most of this family computes over bytes a caller hands it. This one carries a
 protocol. That is the thing to assess:
@@ -26,8 +26,9 @@ recommend for transport, and it is not optional here, which means no deployment
 can accidentally end up without it.
 
 **Authentication is mutual and key-based.** With an `identity`, both ends sign
-their own role label and `SHA-256(clientHello || serverHello)` with ML-DSA-65
-and exchange the signature inside the encrypted session, so a signature sent
+their own role label and `SHA-256(clientHello || serverHello)` with ML-DSA-87
+or ML-DSA-65, each with the set its own key belongs to, and exchange the
+signature inside the encrypted session, so a signature sent
 back to its signer is refused. Each side proves it holds its key, and with the
 peer's key pinned in `peerPublicKey` it proves which key that is, not which
 certificate some authority was willing to sign. A side holding an identity
@@ -38,6 +39,10 @@ in the path.
 the ClientHello is inside the signed transcript, so an active attacker who
 flips the mutual-auth bit in flight cannot produce a matching signature. The
 downgrade this protocol is most obviously exposed to is closed by construction.
+The flags bytes of both hellos also carry each side's ML-DSA parameter set, so
+the set a side signs with is inside what both sides sign. No set is negotiated: each side signs with
+the set its own key belongs to, and a pinned peer key fixes the set the peer
+must use, so there is no set for an attacker to steer either side towards.
 
 **A handshake completes or it reports.** `handshakeTimeoutMs` bounds the whole
 exchange, 30 seconds by default, and fails with
@@ -73,6 +78,11 @@ die with the session.
 **Inherited.** Parameter sets and the two interchangeable backends belong to
 `kxco-post-quantum`; see that package's `AGILITY.md`.
 
+**Identity sets side by side.** ML-DSA-87 and ML-DSA-65 identity keys work
+together in one handshake, each end using the set of its own key, so once both
+ends run 1.3.0 a deployment moves its identities to ML-DSA-87 one end at a
+time.
+
 **Versioned on the wire.** Both `ClientHello` and `ServerHello` open with
 `version = 0x01`, and the HKDF info string is `kxco-pq-tls-v1`. A v2 handshake
 is distinguishable on the wire rather than guessed at, and the key schedule of
@@ -99,13 +109,16 @@ are checkable without asking us for anything.
 **Supported versions.** One line moving forward. Fixes land in the next release.
 
 **Cost.** One ML-KEM-768 encapsulation and one X25519 exchange per connection,
-plus two ML-DSA-65 operations per side with mutual authentication on. Record
+plus two ML-DSA operations per side, one signature and one verification, with
+mutual authentication on. Record
 throughput afterwards is AES-256-GCM and is not the constraint. Connection reuse
 is the lever for designs that open many short connections, and the primitives
 package's `BENCHMARKS.md` has the per-operation figures at p50 and p99 on both
 backends.
 
-**Sizing.** A ClientHello is 1218 bytes and a ServerHello 1122. Worth knowing
+**Sizing.** A ClientHello is 1218 bytes and a ServerHello 1122. With mutual
+authentication each side then sends one Finished frame, 7236 bytes on the wire
+for ML-DSA-87 and 5278 for ML-DSA-65. Worth knowing
 for constrained links, and the reason the sizes are documented rather than
 discovered.
 

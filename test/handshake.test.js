@@ -7,12 +7,15 @@ import assert from 'node:assert/strict'
 import { initiatorHandshake, responderHandshake } from '../src/handshake.js'
 import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
 import { sealFrame, openFrame } from '../src/primitives.js'
-import { mlDsa } from 'kxco-post-quantum'
+import { mlDsa, mlDsa87 } from 'kxco-post-quantum'
 
 // Generate once and reuse across auth tests — keygen is the expensive step
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
 const relayId = mlDsa.ml_dsa65.keygen()
+const initId87 = mlDsa87.ml_dsa87.keygen()
+const respId87 = mlDsa87.ml_dsa87.keygen()
+const relayId87 = mlDsa87.ml_dsa87.keygen()
 
 // Whether a reported peer key is exactly the given public key.
 const sameKey = (reported, publicKey) =>
@@ -268,7 +271,7 @@ test('a relay holding its own identity shows in peerPublicKey, and is refused on
   assert.ok(pb.error instanceof KxcoPqTlsError, 'the pinned responder refuses the relay')
 })
 
-test('a pinned peer key needs an identity on this side, and must be an ML-DSA-65 public key', async () => {
+test('a pinned peer key needs an identity on this side, and must be an ML-DSA-87 or ML-DSA-65 public key', async () => {
   const never = () => new Promise(() => {})
   await assert.rejects(
     initiatorHandshake(async () => {}, never, { peerPublicKey: respId.publicKey, handshakeTimeoutMs: 300 }),
@@ -354,4 +357,222 @@ test('handshakeTimeoutMs: 0 restores the unbounded wait', async () => {
     new Promise(res => setTimeout(() => res('still waiting'), 300)),
   ])
   assert.equal(settled, 'still waiting')
+})
+
+// ---------------------------------------------------------------------------
+// Parameter sets: ML-DSA-87 and ML-DSA-65
+// ---------------------------------------------------------------------------
+
+// Every pairing of the two sets, initiator first.
+const PAIRINGS = [
+  ['ML-DSA-87', 'ML-DSA-87', initId87, respId87],
+  ['ML-DSA-87', 'ML-DSA-65', initId87, respId],
+  ['ML-DSA-65', 'ML-DSA-87', initId, respId87],
+  ['ML-DSA-65', 'ML-DSA-65', initId, respId],
+]
+
+// An in-memory channel that keeps a copy of every message each side sends,
+// and passes each one through `tamper` on its way to the other side.
+function recordingChannel(tamper = (_role, _index, data) => data) {
+  const ch = makeInMemoryChannel()
+  const sent = { initiator: [], responder: [] }
+  const wrap = (role, send) => (data) => {
+    const index = sent[role].push(Buffer.from(data)) - 1
+    return send(tamper(role, index, Buffer.from(data)))
+  }
+  return {
+    sent,
+    initiatorSend: wrap('initiator', ch.initiatorSend), initiatorRecv: ch.initiatorRecv,
+    responderSend: wrap('responder', ch.responderSend), responderRecv: ch.responderRecv,
+  }
+}
+
+test('every pairing of ML-DSA-87 and ML-DSA-65 authenticates, each key pinned by the other side', async () => {
+  for (const [iSet, rSet, i, r] of PAIRINGS) {
+    const label = `${iSet} initiator, ${rSet} responder`
+    const ch = makeInMemoryChannel()
+    const [init, resp] = await Promise.all([
+      initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: i, peerPublicKey: r.publicKey }),
+      responderHandshake(ch.responderSend, ch.responderRecv, { identity: r, peerPublicKey: i.publicKey }),
+    ])
+    assert.deepEqual(init.txKey, resp.rxKey, label)
+    assert.deepEqual(init.rxKey, resp.txKey, label)
+    assert.ok(sameKey(init.peerPublicKey, r.publicKey), `${label}: the initiator reports the responder key`)
+    assert.ok(sameKey(resp.peerPublicKey, i.publicKey), `${label}: the responder reports the initiator key`)
+  }
+})
+
+test('each side declares its set in its hello, and two ML-DSA-65 ends send what 1.2.4 sends', async () => {
+  // [ClientHello flags, ServerHello flags, initiator Finished, responder Finished]
+  // A Finished frame on the wire is its plaintext plus a 16-byte GCM tag:
+  // 7236 bytes for ML-DSA-87, 5278 for ML-DSA-65.
+  const expected = {
+    'ML-DSA-87 ML-DSA-87': [0x03, 0x07, 7236, 7236],
+    'ML-DSA-87 ML-DSA-65': [0x03, 0x03, 7236, 5278],
+    'ML-DSA-65 ML-DSA-87': [0x01, 0x05, 5278, 7236],
+    'ML-DSA-65 ML-DSA-65': [0x01, 0x01, 5278, 5278],  // as 1.2.4
+  }
+  for (const [iSet, rSet, i, r] of PAIRINGS) {
+    const ch = recordingChannel()
+    await Promise.all([
+      initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: i }),
+      responderHandshake(ch.responderSend, ch.responderRecv, { identity: r }),
+    ])
+    const [clientHello, initFinished, ...moreI] = ch.sent.initiator
+    const [serverHello, respFinished, ...moreR] = ch.sent.responder
+    assert.equal(clientHello.length, 1218)
+    assert.equal(serverHello.length, 1122)
+    assert.deepEqual(moreI.concat(moreR), [], 'two messages each way')
+    assert.deepEqual(
+      [clientHello[1], serverHello[1], initFinished.length, respFinished.length],
+      expected[`${iSet} ${rSet}`],
+      `${iSet} initiator, ${rSet} responder`,
+    )
+  }
+})
+
+test('a pinned ML-DSA-87 key that does not match fails the handshake, on either side', async () => {
+  for (const pinOn of ['initiator', 'responder']) {
+    const ch = makeInMemoryChannel()
+    const [init, resp] = await Promise.all([
+      outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, {
+        identity: initId87, handshakeTimeoutMs: 2000,
+        ...(pinOn === 'initiator' && { peerPublicKey: relayId87.publicKey }),
+      })),
+      outcome(responderHandshake(ch.responderSend, ch.responderRecv, {
+        identity: respId87, handshakeTimeoutMs: 2000,
+        ...(pinOn === 'responder' && { peerPublicKey: relayId87.publicKey }),
+      })),
+    ])
+    const pinned = pinOn === 'initiator' ? init : resp
+    assert.ok(pinned.error instanceof KxcoPqTlsError, `the ${pinOn} refuses`)
+    assert.match(pinned.error.message, /proved a different key from the pinned peerPublicKey/)
+  }
+})
+
+test('a peer that declares a set other than its pinned key\'s is refused before this side signs', async () => {
+  const t = { handshakeTimeoutMs: 300 }
+  for (const [pinned, presented] of [[respId87, respId], [respId, respId87]]) {
+    const want = pinned.publicKey.length === 2592 ? 'ML-DSA-87' : 'ML-DSA-65'
+    const got  = want === 'ML-DSA-87' ? 'ML-DSA-65' : 'ML-DSA-87'
+
+    // The initiator pins one set and the responder presents the other.
+    let ch = recordingChannel()
+    const [init] = await Promise.all([
+      outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: initId87, peerPublicKey: pinned.publicKey, ...t })),
+      outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: presented, ...t })),
+    ])
+    assert.ok(init.error instanceof KxcoPqTlsError, 'the initiator refuses')
+    assert.equal(init.error.message,
+      `initiator: the peer declared ${got} and the pinned peerPublicKey is an ${want} key`)
+    assert.equal(ch.sent.initiator.length, 1, 'the initiator sent its ClientHello and no Finished frame')
+
+    // The responder pins one set and the initiator presents the other.
+    ch = recordingChannel()
+    const [, resp] = await Promise.all([
+      outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: presented, ...t })),
+      outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: initId87, peerPublicKey: pinned.publicKey, ...t })),
+    ])
+    assert.ok(resp.error instanceof KxcoPqTlsError, 'the responder refuses')
+    assert.equal(resp.error.message,
+      `responder: the peer declared ${got} and the pinned peerPublicKey is an ${want} key`)
+    assert.equal(ch.sent.responder.length, 0, 'the responder refused before answering')
+  }
+})
+
+test('a key of any other length is refused, as an identity or as a pinned key, before anything is sent', async () => {
+  const never = () => new Promise(() => {})
+  const bytes = (n) => new Uint8Array(n)
+  const cases = [
+    // 1312 bytes is an ML-DSA-44 public key; 2591 and 2593 are one byte either side of ML-DSA-87.
+    [{ identity: { publicKey: bytes(1312), secretKey: bytes(2560) } }, /identity\.publicKey must be an ML-DSA-87 \(2592-byte\) or ML-DSA-65 \(1952-byte\) public key, got 1312 bytes/],
+    [{ identity: { publicKey: bytes(2591), secretKey: bytes(4896) } }, /identity\.publicKey must be .*got 2591 bytes/],
+    [{ identity: { publicKey: 'not a key', secretKey: bytes(4896) } }, /identity\.publicKey must be .*got string/],
+    [{ identity: { publicKey: initId87.publicKey, secretKey: initId.secretKey } }, /identity\.secretKey must be the 4896-byte ML-DSA-87 secret key/],
+    [{ identity: { publicKey: initId.publicKey, secretKey: initId87.secretKey } }, /identity\.secretKey must be the 4032-byte ML-DSA-65 secret key/],
+    [{ identity: initId87, peerPublicKey: bytes(2593) }, /peerPublicKey must be an ML-DSA-87 \(2592-byte\) or ML-DSA-65 \(1952-byte\) public key, got 2593 bytes/],
+    [{ identity: initId, peerPublicKey: bytes(1312) }, /peerPublicKey must be .*got 1312 bytes/],
+  ]
+  for (const [options, message] of cases) {
+    for (const handshake of [initiatorHandshake, responderHandshake]) {
+      let sent = 0
+      await assert.rejects(
+        handshake(async () => { sent++ }, never, { ...options, handshakeTimeoutMs: 300 }),
+        (err) => err instanceof KxcoPqTlsError && message.test(err.message),
+        `${handshake.name}: ${message}`,
+      )
+      assert.equal(sent, 0, `${handshake.name} sent nothing`)
+    }
+  }
+})
+
+test('a hello changed in flight is refused: each signature covers both hellos and the sets they declare', async () => {
+  // Bit 1 of the ServerHello echoes the initiator's set. Neither the session
+  // keys nor the frame sizes depend on the echo, so the change reaches the
+  // signatures and only they can refuse it.
+  for (const [iSet, rSet, i, r] of PAIRINGS) {
+    const label = `${iSet} initiator, ${rSet} responder`
+    const ch = recordingChannel((role, index, data) => {
+      if (role === 'responder' && index === 0) data[1] ^= 0x02
+      return data
+    })
+    const [init, resp] = await Promise.all([
+      outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: i, handshakeTimeoutMs: 2000 })),
+      outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: r, handshakeTimeoutMs: 2000 })),
+    ])
+    assert.ok(init.error instanceof KxcoPqTlsError, `${label}: the initiator refuses`)
+    assert.match(init.error.message, /initiator: peer identity verification failed/, label)
+    assert.ok(resp.error instanceof KxcoPqTlsError, `${label}: the responder refuses`)
+    assert.match(resp.error.message, /responder: peer identity verification failed/, label)
+  }
+})
+
+test('a set flag changed in flight is refused, by the side that reads the wrong frame and by the signature', async () => {
+  const t = { handshakeTimeoutMs: 2000 }
+  // ML-DSA-87 at both ends, and the ClientHello made to declare ML-DSA-65.
+  let ch = recordingChannel((role, index, data) => {
+    if (role === 'initiator' && index === 0) data[1] &= ~0x02
+    return data
+  })
+  let [init, resp] = await Promise.all([
+    outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: initId87, ...t })),
+    outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: respId87, ...t })),
+  ])
+  assert.match(resp.error?.message ?? '', /responder: the peer declared ML-DSA-65 and sent a Finished frame of 7220 bytes, not 5262/)
+  assert.match(init.error?.message ?? '', /initiator: peer identity verification failed/)
+
+  // ML-DSA-65 at both ends, and the ServerHello made to declare ML-DSA-87.
+  ch = recordingChannel((role, index, data) => {
+    if (role === 'responder' && index === 0) data[1] |= 0x04
+    return data
+  })
+  ;[init, resp] = await Promise.all([
+    outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: initId, ...t })),
+    outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: respId, ...t })),
+  ])
+  assert.match(init.error?.message ?? '', /initiator: the peer declared ML-DSA-87 and sent a Finished frame of 5262 bytes, not 7220/)
+  assert.match(resp.error?.message ?? '', /responder: peer identity verification failed/)
+})
+
+test('a hello with a flag this version does not know is refused', async () => {
+  const t = { handshakeTimeoutMs: 300 }
+  let ch = recordingChannel((role, index, data) => {
+    if (role === 'initiator' && index === 0) data[1] |= 0x04
+    return data
+  })
+  const [, resp] = await Promise.all([
+    outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: initId, ...t })),
+    outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: respId, ...t })),
+  ])
+  assert.match(resp.error?.message ?? '', /ClientHello: unknown flags 0x5/)
+
+  ch = recordingChannel((role, index, data) => {
+    if (role === 'responder' && index === 0) data[1] |= 0x08
+    return data
+  })
+  const [init] = await Promise.all([
+    outcome(initiatorHandshake(ch.initiatorSend, ch.initiatorRecv, { identity: initId, ...t })),
+    outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: respId, ...t })),
+  ])
+  assert.match(init.error?.message ?? '', /ServerHello: unknown flags 0x9/)
 })
