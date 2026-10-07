@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
 import { Duplex, Writable } from 'node:stream'
-import { mlDsa } from 'kxco-post-quantum'
+import { mlDsa, mlDsa87 } from 'kxco-post-quantum'
 import { wrapStream } from '../src/stream.js'
 import { responderHandshake } from '../src/handshake.js'
 import { openFrame } from '../src/primitives.js'
@@ -14,6 +14,8 @@ import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
 const relayId = mlDsa.ml_dsa65.keygen()
+const initId87 = mlDsa87.ml_dsa87.keygen()
+const respId87 = mlDsa87.ml_dsa87.keygen()
 
 const sameKey = (reported, publicKey) =>
   reported !== undefined && Buffer.from(reported).equals(Buffer.from(publicKey))
@@ -223,6 +225,32 @@ test('wrapStream: mutual authentication over TCP, each side reporting the key th
   client.write('reply')
   const reply = await within(3000, () => 'no reply', new Promise((res) => server.once('data', res)))
   assert.equal(reply.toString(), 'reply')
+})
+
+test('wrapStream: ML-DSA-87 at both ends, and mixed with ML-DSA-65 in either role, over TCP', async (t) => {
+  // A Finished frame is 7236 bytes on the wire for ML-DSA-87 and 5278 for
+  // ML-DSA-65, so each side must read the size its peer declared. The
+  // responder speaks first, so its first record can arrive behind its Finished.
+  for (const [label, i, r] of [
+    ['ML-DSA-87 to ML-DSA-87', initId87, respId87],
+    ['ML-DSA-87 to ML-DSA-65', initId87, respId],
+    ['ML-DSA-65 to ML-DSA-87', initId, respId87],
+  ]) {
+    const [c, s] = await pairFor(t)
+    const [client, server] = await Promise.all([
+      wrapStream(c, { role: 'initiator', identity: i, peerPublicKey: r.publicKey, handshakeTimeoutMs: 3000 }),
+      wrapStream(s, { role: 'responder', identity: r, peerPublicKey: i.publicKey, handshakeTimeoutMs: 3000 })
+        .then((server) => { server.write('greeting'); return server }),
+    ])
+    assert.ok(sameKey(client.peerPublicKey, r.publicKey), `${label}: the client reports the server key`)
+    assert.ok(sameKey(server.peerPublicKey, i.publicKey), `${label}: the server reports the client key`)
+
+    const greeting = await within(3000, () => `${label}: no greeting`, new Promise((res) => client.once('data', res)))
+    assert.equal(greeting.toString(), 'greeting')
+    client.write('reply')
+    const reply = await within(3000, () => `${label}: no reply`, new Promise((res) => server.once('data', res)))
+    assert.equal(reply.toString(), 'reply')
+  }
 })
 
 // ---------------------------------------------------------------------------

@@ -8,8 +8,8 @@ import { KxcoPqTlsError } from './errors.js'
  * Returns a Promise<Duplex> that resolves once the handshake completes.
  *
  * options.role     — 'initiator' | 'responder'  (required)
- * options.identity — { publicKey, secretKey }    (ML-DSA-65, optional — mutual auth)
- * options.peerPublicKey: the ML-DSA-65 public key the peer must prove (optional)
+ * options.identity: { publicKey, secretKey }, ML-DSA-87 or ML-DSA-65 (optional, mutual auth)
+ * options.peerPublicKey: the ML-DSA-87 or ML-DSA-65 public key the peer must prove (optional)
  *
  * The stream's peerPublicKey is the key the peer proved, or undefined without
  * mutual auth.

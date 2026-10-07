@@ -3,6 +3,12 @@
 import type { Duplex } from 'node:stream'
 import type { EventEmitter } from 'node:events'
 
+/**
+ * An ML-DSA keypair (NIST FIPS 204) for mutual authentication. The public
+ * key's length sets the parameter set: 2592 bytes is ML-DSA-87 and 1952 bytes
+ * is ML-DSA-65. Any other length is refused with `KxcoPqTlsError`, as is a
+ * secret key of the wrong length for the set. Use ML-DSA-87 for new identities.
+ */
 export interface PqIdentity {
   publicKey: Uint8Array | Buffer
   secretKey: Uint8Array | Buffer
@@ -11,15 +17,18 @@ export interface PqIdentity {
 export interface ChannelOptions {
   role:      'initiator' | 'responder'
   /**
-   * ML-DSA-65 keypair for mutual authentication. Optional. A responder given
-   * one refuses an initiator that does not authenticate too.
+   * ML-DSA-87 or ML-DSA-65 keypair for mutual authentication. Optional. A
+   * responder given one refuses an initiator that does not authenticate too.
+   * Each side signs with the set its own key belongs to, so the two sides may
+   * use different sets.
    */
   identity?: PqIdentity
   /**
-   * The ML-DSA-65 public key (1952 bytes) the peer must prove. Optional, and
-   * needs an `identity` on this side, because the peer proves its key only in
-   * a mutual handshake. A peer that proves any other key fails the handshake
-   * with `KxcoPqTlsError`.
+   * The ML-DSA-87 (2592 bytes) or ML-DSA-65 (1952 bytes) public key the peer
+   * must prove. Optional, and needs an `identity` on this side, because the
+   * peer proves its key only in a mutual handshake. A peer that declares the
+   * other parameter set, or proves any other key, fails the handshake with
+   * `KxcoPqTlsError`.
    *
    * Mutual authentication proves the peer holds the private half of the key
    * it presented, not that it is the key you expect: a relay holding a key of
@@ -40,7 +49,7 @@ export interface ChannelOptions {
 
 export interface HandshakeOptions {
   identity?: PqIdentity
-  /** The ML-DSA-65 public key the peer must prove. See `ChannelOptions`. */
+  /** The ML-DSA-87 or ML-DSA-65 public key the peer must prove. See `ChannelOptions`. */
   peerPublicKey?: Uint8Array | Buffer
   /**
    * Total deadline for the handshake, in milliseconds. Defaults to 30000.
@@ -56,13 +65,13 @@ export interface SessionKeys {
    */
   txKey: Uint8Array
   rxKey: Uint8Array
-  /** The ML-DSA-65 public key the peer proved, or `undefined` without mutual authentication. */
+  /** The ML-DSA-87 or ML-DSA-65 public key the peer proved, or `undefined` without mutual authentication. */
   peerPublicKey: Uint8Array | undefined
 }
 
 /** The encrypted `Duplex` returned by `wrapStream`. */
 export interface PqTlsStream extends Duplex {
-  /** The ML-DSA-65 public key the peer proved, or `undefined` without mutual authentication. */
+  /** The ML-DSA-87 or ML-DSA-65 public key the peer proved, or `undefined` without mutual authentication. */
   readonly peerPublicKey: Uint8Array | undefined
 }
 
@@ -72,7 +81,7 @@ export interface PqTlsStream extends Duplex {
  * socket is destroyed before the promise rejects.
  *
  * Key exchange: ML-KEM-768 + X25519. Session encryption: AES-256-GCM.
- * Optional mutual auth via ML-DSA-65 Finished frames.
+ * Optional mutual auth via ML-DSA-87 or ML-DSA-65 Finished frames.
  */
 export function wrapStream(socket: Duplex, options: ChannelOptions): Promise<PqTlsStream>
 
@@ -89,7 +98,7 @@ export function wrapWebSocket(ws: unknown, options: ChannelOptions): Promise<PqT
  * Emits `message`, `close`, and `error` events.
  */
 export declare class PqTlsWebSocket extends EventEmitter {
-  /** The ML-DSA-65 public key the peer proved, or `undefined` without mutual authentication. */
+  /** The ML-DSA-87 or ML-DSA-65 public key the peer proved, or `undefined` without mutual authentication. */
   readonly peerPublicKey: Uint8Array | undefined
   send(data: string | Buffer | Uint8Array): void
   close(code?: number, reason?: string | Buffer): void
