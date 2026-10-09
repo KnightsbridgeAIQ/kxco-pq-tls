@@ -122,7 +122,7 @@ for ML-DSA-87 and 5278 for ML-DSA-65. Worth knowing
 for constrained links, and the reason the sizes are documented rather than
 discovered.
 
-**Runtime.** Node 20.19 and later. Node 24 and later run the primitives in
+**Runtime.** Node 22.12 and later. Node 24 and later run the primitives in
 OpenSSL 3.5 and are roughly 4x to 8x faster per operation; everything works on
 either, with identical wire bytes.
 

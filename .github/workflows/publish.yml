@@ -31,15 +31,14 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          # Node 26 because its bundled npm (11.20 on 26.11) already carries
+          # Trusted Publishing's OIDC support, which arrived in npm 11.5.1. On
+          # Node 22 the bundled npm is older and had to be replaced with
+          # `npm install -g npm@11`, a download OpenSSF Scorecard can never count
+          # as pinned. Using the npm the runtime ships removes that download.
+          # kxco-post-quantum publishes this way with provenance.
+          node-version: '26'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Upgrade npm CLI to the 11.x line
-        # Trusted Publishing's OIDC integration needs npm >= 11.5.1 and the npm
-        # bundled with the runner's Node is older. Pinned to 11.x, never @latest:
-        # npm 12 requires Node ^22.22 || ^24.15 || >=26, and @latest broke this
-        # exact step in kxco-post-quantum, so an unpinned install is an outage.
-        run: npm install -g npm@11
 
       - run: npm ci
       - run: npm test

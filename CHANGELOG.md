@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.0 (2026-10-09)
+
+Runtime support. No change to the API or its behaviour.
+
+**Node.js 22.12 or later is required.** `engines.node` moves from `>=20.19`
+to `>=22.12`. Node 20 reached end of life on 30 April 2026. 22.12 is the
+first Node 22 release that loads ES modules through `require()` without a
+flag, the same property the 20.19 floor provided.
+
+**CI tests every change on Node 22, 24 and 26.** It tested Node 20, 22 and 24 before.
+
+**Releases are built on Node 26**, where they were built on Node 22.
+Node 26 ships npm 11.20, which already carries Trusted Publishing, so the
+release job no longer downloads npm 11 separately.
+
 ## 1.3.0 (2026-10-07)
 
 **ML-DSA-87 identities.** Mutual authentication takes an ML-DSA-87 or an
