@@ -53,7 +53,7 @@ For encryption at rest, use [`kxco-pq-vault`](https://www.npmjs.com/package/kxco
 npm install kxco-pq-tls
 ```
 
-Requires Node.js 20.19 or later.
+Requires Node.js 22.12 or later.
 
 ## Quick start
 
