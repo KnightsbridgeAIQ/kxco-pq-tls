@@ -4,7 +4,10 @@ import {
   generateKemKeypair, generateX25519Keypair,
   kemEncapsulate, kemDecapsulate, x25519DH,
   deriveKeys, sealFrame, openFrame,
+  ML_KEM_768, ML_KEM_1024,
 } from '../src/primitives.js'
+import { hkdf } from '@noble/hashes/hkdf.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 
 test('ML-KEM-768 encap/decap roundtrip', () => {
   const kp = generateKemKeypair()
@@ -95,4 +98,34 @@ test('sequence numbers are independent per key', () => {
   // Cross-key decryption must fail
   assert.throws(() => openFrame(k2, 0, ct1), /authentication failed/)
   assert.throws(() => openFrame(k1, 0, ct2), /authentication failed/)
+})
+
+test('ML-KEM-1024 encap/decap roundtrip', () => {
+  const kp = generateKemKeypair(ML_KEM_1024)
+  assert.equal(kp.publicKey.length, 1568)
+  assert.equal(kp.secretKey.length, 3168)
+
+  const { ciphertext, sharedSecret: ss1 } = kemEncapsulate(kp.publicKey, ML_KEM_1024)
+  assert.equal(ciphertext.length, 1568)
+  assert.equal(ss1.length, 32)
+
+  assert.deepEqual(kemDecapsulate(ciphertext, kp.secretKey, ML_KEM_1024), ss1)
+})
+
+test('deriveKeys labels each ML-KEM set: kxco-pq-tls-v1 for ML-KEM-768, as 1.4.0, and kxco-pq-tls-v1-ml-kem-1024', () => {
+  const ssKem = new Uint8Array(32).fill(8)
+  const ssDh  = new Uint8Array(32).fill(9)
+  const salt  = new Uint8Array(64).fill(10)
+  const expected = (label) => {
+    const ikm = new Uint8Array(64)
+    ikm.set(ssKem)
+    ikm.set(ssDh, 32)
+    const base = hkdf(sha256, ikm, salt, new TextEncoder().encode(label), 32)
+    const split = (info) => hkdf(sha256, base, new Uint8Array(0), new TextEncoder().encode(info), 32)
+    return { keyC2S: split('kxco-pq-tls-v1-c2s'), keyS2C: split('kxco-pq-tls-v1-s2c') }
+  }
+  assert.deepEqual(deriveKeys(ssKem, ssDh, salt), expected('kxco-pq-tls-v1'))
+  assert.deepEqual(deriveKeys(ssKem, ssDh, salt, ML_KEM_768), expected('kxco-pq-tls-v1'))
+  assert.deepEqual(deriveKeys(ssKem, ssDh, salt, ML_KEM_1024), expected('kxco-pq-tls-v1-ml-kem-1024'))
+  assert.notDeepEqual(deriveKeys(ssKem, ssDh, salt, ML_KEM_1024), deriveKeys(ssKem, ssDh, salt))
 })

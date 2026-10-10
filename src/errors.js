@@ -14,3 +14,10 @@ export class KxcoPqTlsError extends Error {
 
 /** The handshake did not complete within its deadline. */
 export const ERR_HANDSHAKE_TIMEOUT = 'ERR_KXCO_PQ_TLS_HANDSHAKE_TIMEOUT'
+
+/**
+ * An ML-KEM-1024 initiator got no ServerHello it could use: the connection
+ * closed, or the deadline passed, before one arrived. The likely cause is a
+ * responder on 1.4.0 or earlier. For diagnosis: the original error is `cause`.
+ */
+export const ERR_RESPONDER_CANNOT_READ_ML_KEM_1024 = 'ERR_KXCO_PQ_TLS_RESPONDER_CANNOT_READ_ML_KEM_1024'

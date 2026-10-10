@@ -17,8 +17,9 @@ handshake, its own record layer, and mutual ML-DSA-87 or ML-DSA-65 identity.
 Most of this family computes over bytes a caller hands it. This one carries a
 protocol. That is the thing to assess:
 
-**Key exchange is hybrid by construction.** ML-KEM-768 combined with X25519,
-mixed through HKDF, with AES-256-GCM and a sequence-number nonce on the records.
+**Key exchange is hybrid by construction.** ML-KEM-1024 by default, or
+ML-KEM-768 when the initiator asks for it, combined with X25519, mixed through
+HKDF, with AES-256-GCM and a sequence-number nonce on the records.
 Both secrets are always mixed, so the session holds if either primitive holds.
 An adversary who breaks X25519 recovers nothing; an adversary who breaks ML-KEM
 recovers nothing. This is the belt-and-braces position the standards bodies
@@ -43,6 +44,8 @@ The flags bytes of both hellos also carry each side's ML-DSA parameter set, so
 the set a side signs with is inside what both sides sign. No set is negotiated: each side signs with
 the set its own key belongs to, and a pinned peer key fixes the set the peer
 must use, so there is no set for an attacker to steer either side towards.
+The ML-KEM set is the initiator's own setting, declared in its ClientHello and
+echoed in the ServerHello, so it too is inside what both sides sign.
 
 **A handshake completes or it reports.** `handshakeTimeoutMs` bounds the whole
 exchange, 30 seconds by default, and fails with
@@ -53,6 +56,13 @@ fails earlier on a version byte or a frame length, and a peer that was never
 reachable fails in the caller's socket before this code runs, so this error
 means a peer accepted the connection and then did not send the expected frame.
 In practice, a configuration mismatch, and the message says so.
+
+An ML-KEM-1024 initiator that gets no usable ServerHello, from a close or from
+the deadline, fails instead with
+`err.code === 'ERR_KXCO_PQ_TLS_RESPONDER_CANNOT_READ_ML_KEM_1024'`. The message
+names the likely cause, an older responder, and the original error is kept as
+`cause`. Nothing falls back to ML-KEM-768 by itself, because a fallback is a
+downgrade path that anyone able to cut a connection could force.
 
 **The connection is the caller's; the protocol is ours.** `wrapStream` and
 `wrapWebSocket` take an already-connected socket. This package never resolves a
@@ -83,6 +93,13 @@ together in one handshake, each end using the set of its own key, so once both
 ends run 1.3.0 a deployment moves its identities to ML-DSA-87 one end at a
 time.
 
+**ML-KEM sets side by side.** A responder on 1.5.0 or later accepts
+ML-KEM-768 and ML-KEM-1024 and answers in the set the initiator chose. A
+deployment moves its sessions to ML-KEM-1024 by upgrading responders first,
+then initiators, which send ML-KEM-1024 by default from 2.0.0. An initiator
+that must still reach a responder on 1.4.0 or earlier passes
+`kem: 'ml-kem-768'`.
+
 **Versioned on the wire.** Both `ClientHello` and `ServerHello` open with
 `version = 0x01`, and the HKDF info string is `kxco-pq-tls-v1`. A v2 handshake
 is distinguishable on the wire rather than guessed at, and the key schedule of
@@ -92,9 +109,10 @@ migration needs, present before it is needed.
 **Migration path.** Deploy responders that accept v1 and v2, move initiators,
 retire v1: the add-then-remove staging the primitives package documents in
 `MIGRATION.md`, run at the protocol level. Frame sizes are fixed per version
-(1184 bytes of ML-KEM-768 encapsulation key and 32 of X25519 in the ClientHello;
-1088 and 32 in the ServerHello), which is what makes a version identifiable from
-the first byte on the wire.
+and ML-KEM set, which is what makes a version identifiable from the first byte
+on the wire. With ML-KEM-768 the ClientHello carries 1184 bytes of
+encapsulation key and 32 of X25519, and the ServerHello 1088 and 32. With
+ML-KEM-1024, declared in the flags byte, each carries 1568 and 32.
 
 ## Running it
 
@@ -108,7 +126,7 @@ are checkable without asking us for anything.
 
 **Supported versions.** One line moving forward. Fixes land in the next release.
 
-**Cost.** One ML-KEM-768 encapsulation and one X25519 exchange per connection,
+**Cost.** One ML-KEM encapsulation and one X25519 exchange per connection,
 plus two ML-DSA operations per side, one signature and one verification, with
 mutual authentication on. Record
 throughput afterwards is AES-256-GCM and is not the constraint. Connection reuse
@@ -116,7 +134,8 @@ is the lever for designs that open many short connections, and the primitives
 package's `BENCHMARKS.md` has the per-operation figures at p50 and p99 on both
 backends.
 
-**Sizing.** A ClientHello is 1218 bytes and a ServerHello 1122. With mutual
+**Sizing.** With ML-KEM-1024, the default, a ClientHello and a ServerHello are
+1602 bytes each; with ML-KEM-768 they are 1218 and 1122. With mutual
 authentication each side then sends one Finished frame, 7236 bytes on the wire
 for ML-DSA-87 and 5278 for ML-DSA-65. Worth knowing
 for constrained links, and the reason the sizes are documented rather than

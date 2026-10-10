@@ -1,4 +1,4 @@
-import { mlKem, mlDsa, mlDsa87 } from 'kxco-post-quantum'
+import { mlKem, mlKem1024, mlDsa, mlDsa87 } from 'kxco-post-quantum'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -10,8 +10,22 @@ const PROTOCOL = new TextEncoder().encode('kxco-pq-tls-v1')
 const INFO_C2S  = new TextEncoder().encode('kxco-pq-tls-v1-c2s')
 const INFO_S2C  = new TextEncoder().encode('kxco-pq-tls-v1-s2c')
 
-export function generateKemKeypair() {
-  return mlKem.ml_kem768.keygen()
+// The ML-KEM parameter sets a session may use (FIPS 203), with their sizes in
+// bytes. The initiator chooses, and a ClientHello flag declares ML-KEM-1024.
+// Each set has its own label for the session key, so the two key schedules
+// never meet. The ML-KEM-768 label is the one 1.4.0 uses.
+export const ML_KEM_768 = Object.freeze({
+  name: 'ML-KEM-768', publicKey: 1184, ciphertext: 1088, impl: mlKem,
+  keygen: () => mlKem.ml_kem768.keygen(), label: PROTOCOL,
+})
+export const ML_KEM_1024 = Object.freeze({
+  name: 'ML-KEM-1024', publicKey: 1568, ciphertext: 1568, impl: mlKem1024,
+  keygen: () => mlKem1024.ml_kem1024.keygen(),
+  label: new TextEncoder().encode('kxco-pq-tls-v1-ml-kem-1024'),
+})
+
+export function generateKemKeypair(set = ML_KEM_768) {
+  return set.keygen()
 }
 
 export function generateX25519Keypair() {
@@ -20,13 +34,13 @@ export function generateX25519Keypair() {
   return { publicKey, secretKey }
 }
 
-export function kemEncapsulate(publicKey) {
-  const { ciphertext, sharedSecret } = mlKem.encapsulate(new Uint8Array(publicKey))
+export function kemEncapsulate(publicKey, set = ML_KEM_768) {
+  const { ciphertext, sharedSecret } = set.impl.encapsulate(new Uint8Array(publicKey))
   return { ciphertext: new Uint8Array(ciphertext), sharedSecret: new Uint8Array(sharedSecret) }
 }
 
-export function kemDecapsulate(ciphertext, secretKey) {
-  return new Uint8Array(mlKem.decapsulate(new Uint8Array(ciphertext), new Uint8Array(secretKey)))
+export function kemDecapsulate(ciphertext, secretKey, set = ML_KEM_768) {
+  return new Uint8Array(set.impl.decapsulate(new Uint8Array(ciphertext), new Uint8Array(secretKey)))
 }
 
 export function x25519DH(sk, pk) {
@@ -35,11 +49,12 @@ export function x25519DH(sk, pk) {
 
 // Derive per-direction session keys from the two shared secrets.
 // salt = initiator_x25519_pk || responder_x25519_pk (64 bytes, transcript-bound)
-export function deriveKeys(ssKem, ssDh, salt) {
+// The label is the ML-KEM set's: "kxco-pq-tls-v1" for ML-KEM-768, as in 1.4.0.
+export function deriveKeys(ssKem, ssDh, salt, set = ML_KEM_768) {
   const ikm = new Uint8Array(64)
   ikm.set(ssKem)
   ikm.set(ssDh, 32)
-  const base = hkdf(sha256, ikm, salt, PROTOCOL, 32)
+  const base = hkdf(sha256, ikm, salt, set.label, 32)
   return {
     keyC2S: hkdf(sha256, base, new Uint8Array(0), INFO_C2S, 32),
     keyS2C: hkdf(sha256, base, new Uint8Array(0), INFO_S2C, 32),
