@@ -63,7 +63,11 @@ import {
   dsaSign, dsaVerify, dsaSetOf, ML_DSA_87, ML_DSA_65, sha256,
   ML_KEM_768, ML_KEM_1024,
 } from './primitives.js'
-import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from './errors.js'
+import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024 } from './errors.js'
+
+// Set in the options by wrapWebSocket, never by a caller: the transport hands
+// over one whole message per read. Not exported from the package.
+export const MESSAGE_TRANSPORT = Symbol('kxco-pq-tls message transport')
 
 const VERSION      = 0x01
 const FLAG_AUTH    = 0x01
@@ -182,9 +186,9 @@ export async function initiatorHandshake(send, recv, options = {}) {
 
     // The ServerHello is in the set this side chose. Its echo of that choice
     // is checked by the signatures over the transcript, as the other echoes are.
-    const readServerHello = () => recv(serverHelloSize(kemSet))
-    const serverHello = await deadline.guard(
-      kemSet === ML_KEM_1024 ? explainClosedAfter1024(readServerHello) : readServerHello())
+    const serverHello = kemSet === ML_KEM_1024
+      ? await readServerHello1024(deadline, () => recv(serverHelloSize(kemSet)))
+      : await deadline.guard(recv(serverHelloSize(kemSet)))
     validateHello(serverHello, serverHelloSize(kemSet), 'ServerHello',
       FLAG_AUTH | FLAG_INITIATOR_87 | FLAG_RESPONDER_87 | (flags & FLAG_KEM_1024))
 
@@ -227,9 +231,13 @@ export async function responderHandshake(send, recv, options = {}) {
     // Read the 1218 bytes of an ML-KEM-768 ClientHello, as 1.4.0 does. A stream
     // hands back exactly that many, so a hello that declares ML-KEM-1024 has 384
     // more to read. A message transport, such as a WebSocket, has already handed
-    // back the whole hello, 1218 or 1602 bytes, in one read.
+    // back the whole hello, 1218 or 1602 bytes, in one read. Over wrapWebSocket,
+    // which says so, a 1218-byte hello that declares ML-KEM-1024 is malformed
+    // and its length is refused at once below. Over a caller's own recv the
+    // semantics are unknown, so the rest is read as on a stream.
     let clientHello = await deadline.guard(recv(clientHelloSize(ML_KEM_768)))
-    if (clientHello.length === clientHelloSize(ML_KEM_768) && (clientHello[1] & FLAG_KEM_1024)) {
+    if (!options[MESSAGE_TRANSPORT] &&
+        clientHello.length === clientHelloSize(ML_KEM_768) && (clientHello[1] & FLAG_KEM_1024)) {
       const rest = await deadline.guard(recv(clientHelloSize(ML_KEM_1024) - clientHelloSize(ML_KEM_768)))
       clientHello = Buffer.concat([clientHello, rest])
     }
@@ -358,20 +366,29 @@ function verifyFinished(plaintext, set, signed, role) {
 
 const sizeOf = (key) => (key instanceof Uint8Array ? `${key.length} bytes` : typeof key)
 
-// A responder on 1.4.0 or earlier cannot read an ML-KEM-1024 ClientHello: 1.3.0
-// and 1.4.0 refuse it and close the connection without answering. That close
-// is all the initiator sees, so when the connection fails while it waits for
-// the ServerHello it says what the close most likely means. It cannot tell an
-// old responder from one that refused for another reason, so the transport's
-// own error stays on `cause`. A deadline is not a close and passes unchanged.
-async function explainClosedAfter1024(read) {
+// A responder on 1.4.0 or earlier cannot read an ML-KEM-1024 ClientHello. One
+// on 1.3.0 or 1.4.0 refuses it and closes the connection without answering. One
+// on 1.2.4 or earlier ignores the flag and answers with a 1122-byte ML-KEM-768
+// ServerHello, so the wait for the rest of a 1602-byte one runs into the
+// deadline. The close or the deadline is all the initiator sees, so while it
+// waits for the ServerHello it names the likely cause. It cannot tell an old
+// responder from one that failed for another reason, so the original error
+// stays on `cause`, and the code is for diagnosis. Nothing falls back to
+// ML-KEM-768: a fallback is a downgrade anyone who can cut the connection
+// could force, so a caller chooses `kem: 'ml-kem-768'` explicitly.
+const CLOSED_AFTER_1024 =
+  'the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier ' +
+  "cannot read it: upgrade it, or pass kem: 'ml-kem-768'"
+const NO_SERVER_HELLO_1024 =
+  'no valid ML-KEM-1024 ServerHello before the deadline: a responder on kxco-pq-tls 1.2.4 or earlier ' +
+  "ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: upgrade the responder, or pass kem: 'ml-kem-768'"
+
+async function readServerHello1024(deadline, read) {
   try {
-    return await read()
+    return await deadline.guard((async () => read())())
   } catch (cause) {
-    const err = new KxcoPqTlsError(
-      'the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier ' +
-      "cannot read it: upgrade it, or pass kem: 'ml-kem-768'",
-    )
+    const late = cause?.code === ERR_HANDSHAKE_TIMEOUT
+    const err = new KxcoPqTlsError(late ? NO_SERVER_HELLO_1024 : CLOSED_AFTER_1024, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
     err.cause = cause
     throw err
   }

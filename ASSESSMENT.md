@@ -57,6 +57,13 @@ reachable fails in the caller's socket before this code runs, so this error
 means a peer accepted the connection and then did not send the expected frame.
 In practice, a configuration mismatch, and the message says so.
 
+An ML-KEM-1024 initiator that gets no usable ServerHello, from a close or from
+the deadline, fails instead with
+`err.code === 'ERR_KXCO_PQ_TLS_RESPONDER_CANNOT_READ_ML_KEM_1024'`. The message
+names the likely cause, an older responder, and the original error is kept as
+`cause`. Nothing falls back to ML-KEM-768 by itself, because a fallback is a
+downgrade path that anyone able to cut a connection could force.
+
 **The connection is the caller's; the protocol is ours.** `wrapStream` and
 `wrapWebSocket` take an already-connected socket. This package never resolves a
 hostname or chooses a peer, which keeps the assessed surface exactly the

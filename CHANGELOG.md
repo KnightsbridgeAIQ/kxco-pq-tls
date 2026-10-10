@@ -13,18 +13,47 @@ version compatibility table shows every pairing.
 exactly what 1.4.0 sends and derives the same keys, so it reaches responders on
 every earlier version that 1.4.0 reaches.
 
-**An initiator says why an older responder closed.** When the connection
-closes while an ML-KEM-1024 initiator waits for the ServerHello, the handshake
-fails with `KxcoPqTlsError`: "the responder closed after an ML-KEM-1024 hello;
-a responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass
-kem: 'ml-kem-768'". A responder on 1.3.0 or 1.4.0 refuses the hello and closes
-the connection without answering, and this is what the initiator sees. The
-transport's own error is kept as `cause`, because a close alone cannot show
-why the responder refused: a responder holding an identity that refuses an
-initiator without one produces the same error.
+**There is no automatic fallback to ML-KEM-768.** A fallback would be a
+downgrade path, since anyone able to cut a connection could push both ends
+down to ML-KEM-768. A caller chooses `kem: 'ml-kem-768'` explicitly for a
+responder that needs it.
 
-Responders are unchanged from 1.5.0: they accept both sets and answer in the
-one the initiator chose. The typings give the new default.
+**An initiator says why an older responder failed it, with a stable code.**
+While an ML-KEM-1024 initiator waits for the ServerHello, two failures are
+explained, and both carry `err.code === ERR_RESPONDER_CANNOT_READ_ML_KEM_1024`
+(`'ERR_KXCO_PQ_TLS_RESPONDER_CANNOT_READ_ML_KEM_1024'`), exported, with the
+original error kept as `cause`. The code is for diagnosis.
+
+- The connection closes: "the responder closed after an ML-KEM-1024 hello; a
+  responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass
+  kem: 'ml-kem-768'". A responder on 1.3.0 or 1.4.0 refuses the hello and
+  closes without answering, and 1.2.4 does the same over a WebSocket.
+- The deadline passes: "no valid ML-KEM-1024 ServerHello before the deadline:
+  a responder on kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag,
+  and one on 1.3 or 1.4 refuses it: upgrade the responder, or pass kem:
+  'ml-kem-768'". A responder on 1.2.4 or earlier does not check the flag and
+  answers over a stream with a 1122-byte ML-KEM-768 ServerHello, so the wait
+  for a 1602-byte one runs into the deadline. The `cause` is the
+  `ERR_HANDSHAKE_TIMEOUT` error.
+
+A close or a deadline alone cannot show why the responder failed, so the same
+errors also appear when, for example, a responder holding an identity refuses
+an initiator without one. An ML-KEM-768 initiator, and any deadline after a
+usable ServerHello, still report `ERR_HANDSHAKE_TIMEOUT` or the transport's
+error as before.
+
+**A malformed hello over a WebSocket is refused at once.** `wrapWebSocket`
+tells its responder that each read is a whole message, so a 1218-byte
+ClientHello that declares ML-KEM-1024 is refused with
+`ClientHello: expected 1602 bytes, got 1218` instead of waiting for 384 more
+bytes until the deadline. Through `responderHandshake` with a recv of your own
+the semantics of recv are unknown, so the rest is still read as on a stream;
+the README says so.
+
+The tests run against kxco-pq-tls 1.2.4 from npm as well as 1.4.0, both
+installed as devDependency aliases. Responders are otherwise unchanged from
+1.5.0: they accept both sets and answer in the one the initiator chose. The
+typings give the new default, the code and `cause`.
 
 ## 1.5.0 (2026-10-10)
 

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { initiatorHandshake, responderHandshake } from './handshake.js'
+import { initiatorHandshake, responderHandshake, MESSAGE_TRANSPORT } from './handshake.js'
 import { sealFrame, openFrame } from './primitives.js'
 import { KxcoPqTlsError } from './errors.js'
 
@@ -31,9 +31,11 @@ export async function wrapWebSocket(ws, options = {}) {
 
   let keys
   try {
+    // Each read is one whole message, so the responder can refuse a hello whose
+    // length does not match its flags at once, rather than wait for more.
     keys = options.role === 'initiator'
       ? await initiatorHandshake(send, recv, options)
-      : await responderHandshake(send, recv, options)
+      : await responderHandshake(send, recv, { ...options, [MESSAGE_TRANSPORT]: true })
   } catch (err) {
     // Nothing more can be said on this connection. Closing it tells the peer
     // now, rather than at its own deadline. A peer that ignores the close is

@@ -5,11 +5,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initiatorHandshake, responderHandshake } from '../src/handshake.js'
-import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
+import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024 } from '../src/errors.js'
 import { sealFrame, openFrame } from '../src/primitives.js'
 import { mlDsa, mlDsa87 } from 'kxco-post-quantum'
 // The release on npm before ML-KEM-1024, unmodified.
 import * as v140 from 'kxco-pq-tls-140'
+// The last release before responders checked hello flags, unmodified.
+import * as v124 from 'kxco-pq-tls-124'
 
 // Generate once and reuse across auth tests — keygen is the expensive step
 const initId = mlDsa.ml_dsa65.keygen()
@@ -162,10 +164,17 @@ test('mismatched auth config fails with a timeout instead of hanging', async () 
 
 test('a silent peer times out rather than waiting forever', async () => {
   const never = () => new Promise(() => {})
-  const err = await initiatorHandshake(async () => {}, never, { handshakeTimeoutMs: 100 })
+  const err = await initiatorHandshake(async () => {}, never, { handshakeTimeoutMs: 100, kem: 'ml-kem-768' })
     .then(() => { throw new Error('expected a timeout') }, (e) => e)
 
   assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
+
+  // On ML-KEM-1024, the default, the same deadline names the likely cause
+  // and keeps the timeout as its cause.
+  const late = await initiatorHandshake(async () => {}, never, { handshakeTimeoutMs: 100 })
+    .then(() => { throw new Error('expected a timeout') }, (e) => e)
+  assert.equal(late.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
+  assert.equal(late.cause?.code, ERR_HANDSHAKE_TIMEOUT)
 })
 
 test('the deadline does not fire on a handshake that completes', async () => {
@@ -686,6 +695,10 @@ test('this initiator given kem: ml-kem-768 reaches a 1.4.0 responder with the sa
 // ML-KEM-1024 hello, before any ServerHello.
 const CLOSED_AFTER_1024 = 'the responder closed after an ML-KEM-1024 hello; a responder on ' +
   "kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'"
+// What it raises when the deadline passes before a usable ServerHello.
+const NO_SERVER_HELLO_1024 = 'no valid ML-KEM-1024 ServerHello before the deadline: a responder on ' +
+  'kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: ' +
+  "upgrade the responder, or pass kem: 'ml-kem-768'"
 
 test('this initiator on ML-KEM-1024, by default or by name, meets a 1.4.0 responder: refused, nothing answered, and the initiator says why', async () => {
   for (const kind of LINKS) {
@@ -711,6 +724,7 @@ test('this initiator on ML-KEM-1024, by default or by name, meets a 1.4.0 respon
       // The initiator learns of it from the close, at once, not at its deadline,
       // and says what the close most likely means, keeping the close as cause.
       assert.ok(init.error instanceof KxcoPqTlsError, what)
+      assert.equal(init.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024, what)
       assert.equal(init.error.message, CLOSED_AFTER_1024, what)
       assert.equal(init.error.cause?.message, 'the connection closed', what)
       assert.ok(Date.now() - started < 2000, `${what}: the initiator waited ${Date.now() - started}ms`)
@@ -724,11 +738,85 @@ test('this initiator on ML-KEM-1024, by default or by name, meets a 1.4.0 respon
     outcome(closesOnFailure(link, responderHandshake(link.responderSend, link.responderRecv, { ...quick, identity: respId87 }))),
   ])
   assert.equal(init.error?.message, 'the connection closed')
+  assert.equal(init.error?.code, undefined)
 
-  // A responder that never answers an ML-KEM-1024 hello is a deadline, not a close.
+  // A responder that never answers an ML-KEM-1024 hello is the deadline case,
+  // not a close.
   const never = () => new Promise(() => {})
   const late = await initiatorHandshake(async () => {}, never, { handshakeTimeoutMs: 100 }).then(() => null, (e) => e)
-  assert.equal(late?.code, ERR_HANDSHAKE_TIMEOUT)
+  assert.equal(late?.message, NO_SERVER_HELLO_1024)
+  assert.equal(late?.cause?.code, ERR_HANDSHAKE_TIMEOUT)
+})
+
+test('this initiator on ML-KEM-1024, by default or by name, meets a 1.2.4 responder: on a byte stream it answers ML-KEM-768 and the initiator explains the deadline', async () => {
+  const deadline = 500
+  for (const kind of LINKS) {
+    for (const kem of [{}, { kem: 'ml-kem-1024' }]) {
+      const what = `${kind}, ${kem.kem ?? 'default'}`
+      const link = rawLink(kind)
+      const started = Date.now()
+      const [init, resp] = await Promise.all([
+        outcome(initiatorHandshake(link.initiatorSend, link.initiatorRecv, { handshakeTimeoutMs: deadline, ...kem })),
+        outcome(closesOnFailure(link, v124.responderHandshake(link.responderSend, link.responderRecv, quick))),
+      ])
+      const elapsed = Date.now() - started
+      assert.equal(link.sent.initiator[0].length, 1602, what)
+      assert.ok(init.error instanceof KxcoPqTlsError, what)
+      assert.equal(init.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024, what)
+      if (kind === 'stream') {
+        // 1.2.4 does not check the flag: it reads 1218 bytes, takes them for an
+        // ML-KEM-768 hello and answers with a 1122-byte ServerHello, believing
+        // the handshake complete. The initiator waits for the rest of a
+        // 1602-byte one until its deadline, then says why.
+        assert.ifError(resp.error)
+        assert.deepEqual(link.sent.responder.map((m) => m.length), [1122], what)
+        assert.equal(init.error.message, NO_SERVER_HELLO_1024, what)
+        assert.equal(init.error.cause?.code, ERR_HANDSHAKE_TIMEOUT, what)
+        assert.ok(elapsed >= deadline && elapsed < deadline + 1500, `${what}: failed after ${elapsed}ms`)
+      } else {
+        // On messages 1.2.4 refuses the hello's length and the link closes.
+        assert.equal(resp.error?.message, 'ClientHello: expected 1218 bytes, got 1602', what)
+        assert.equal(link.sent.responder.length, 0, what)
+        assert.equal(init.error.message, CLOSED_AFTER_1024, what)
+        assert.equal(init.error.cause?.message, 'the connection closed', what)
+        assert.ok(elapsed < deadline, `${what}: failed after ${elapsed}ms`)
+      }
+    }
+  }
+
+  // kem: 'ml-kem-768' reaches it, with the same keys.
+  const link = rawLink('stream')
+  const [init, resp] = await Promise.all([
+    initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...quick, kem: 'ml-kem-768' }),
+    v124.responderHandshake(link.responderSend, link.responderRecv, quick),
+  ])
+  assert.deepEqual(init.txKey, resp.rxKey)
+  assert.deepEqual(init.rxKey, resp.txKey)
+
+  // An ML-KEM-768 initiator whose peer is too slow still gets the plain timeout.
+  const slow = rawLink('stream')
+  const plain = await initiatorHandshake(slow.initiatorSend, slow.initiatorRecv, { handshakeTimeoutMs: 100, kem: 'ml-kem-768' })
+    .then(() => null, (e) => e)
+  assert.equal(plain?.code, ERR_HANDSHAKE_TIMEOUT)
+  assert.equal(plain?.cause, undefined)
+})
+
+test('through the handshake functions, a 1218-byte hello declaring ML-KEM-1024 is read as on a stream, because a custom recv may be one', async () => {
+  // A caller's recv may return n bytes or one message, and this side cannot
+  // tell which, so it asks for the 384 bytes a stream would still hold. On a
+  // message transport of the caller's own they never come, and the
+  // responder's deadline ends the wait. wrapWebSocket refuses such a hello at
+  // once instead; see websocket.test.js.
+  const link = rawLink('messages', (role, index, data) => {
+    if (role === 'initiator' && index === 0) data[1] |= 0x08
+    return data
+  })
+  const [, resp] = await Promise.all([
+    outcome(initiatorHandshake(link.initiatorSend, link.initiatorRecv, { handshakeTimeoutMs: 300, kem: 'ml-kem-768' })),
+    outcome(responderHandshake(link.responderSend, link.responderRecv, { handshakeTimeoutMs: 200 })),
+  ])
+  assert.deepEqual(link.responderReads, [1218, 384])
+  assert.equal(resp.error?.code, ERR_HANDSHAKE_TIMEOUT)
 })
 
 test('two ends on this version agree ML-KEM-1024, by default or by name: 1602-byte hellos both ways, the flag declared and echoed', async () => {

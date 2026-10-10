@@ -9,9 +9,11 @@ import { mlDsa, mlDsa87 } from 'kxco-post-quantum'
 import { wrapStream } from '../src/stream.js'
 import { responderHandshake } from '../src/handshake.js'
 import { openFrame } from '../src/primitives.js'
-import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
+import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024 } from '../src/errors.js'
 // The release on npm before ML-KEM-1024, unmodified.
 import * as v140 from 'kxco-pq-tls-140'
+// The last release before responders checked hello flags, unmodified.
+import * as v124 from 'kxco-pq-tls-124'
 
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
@@ -432,14 +434,23 @@ test('wrapStream: a refused initiator sees the connection close at once, not at 
 })
 
 test('wrapStream: a handshake that runs out of time closes the connection', async (t) => {
-  // The server end is a bare socket that accepts and never answers.
-  const [c, s] = await pairFor(t)
-  const closed = new Promise((res) => { s.once('end', res); s.once('close', res) })
-  s.resume()
-  const err = await wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 200 }).then(
-    () => { throw new Error('expected a timeout') }, (e) => e)
-  assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
-  await within(2000, () => 'the connection is still open', closed)
+  // The server end is a bare socket that accepts and never answers. An
+  // ML-KEM-768 initiator reports the plain timeout; on ML-KEM-1024, the
+  // default, the deadline names the likely cause and keeps the timeout as cause.
+  for (const kem of [{ kem: 'ml-kem-768' }, {}]) {
+    const [c, s] = await pairFor(t)
+    const closed = new Promise((res) => { s.once('end', res); s.once('close', res) })
+    s.resume()
+    const err = await wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 200, ...kem }).then(
+      () => { throw new Error('expected a timeout') }, (e) => e)
+    if (kem.kem) {
+      assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
+    } else {
+      assert.equal(err.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
+      assert.equal(err.cause?.code, ERR_HANDSHAKE_TIMEOUT)
+    }
+    await within(2000, () => 'the connection is still open', closed)
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -510,11 +521,68 @@ test('wrapStream: this initiator on ML-KEM-1024, by default or by name, meets a 
     // The initiator learns of it from the close, at once, not at its deadline,
     // and says what the close most likely means, keeping the close as cause.
     assert.ok(client.error instanceof KxcoPqTlsError, what)
+    assert.equal(client.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024, what)
     assert.equal(client.error.message, 'the responder closed after an ML-KEM-1024 hello; a responder on ' +
       "kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'", what)
     assert.equal(client.error.cause?.message, 'stream ended during handshake', what)
     assert.ok(elapsed < 2000, `${what}: the initiator waited ${elapsed}ms`)
   }
+})
+
+test('wrapStream: this initiator on ML-KEM-1024, by default or by name, meets a 1.2.4 responder over TCP: it answers ML-KEM-768 and the initiator explains the deadline', async (t) => {
+  const deadline = 500
+  for (const kem of [{}, { kem: 'ml-kem-1024' }]) {
+    const what = kem.kem ?? 'default'
+    const [c, s] = await pairFor(t)
+    const started = Date.now()
+    const [client, server] = await Promise.all([
+      outcome(wrapStream(c, { role: 'initiator', handshakeTimeoutMs: deadline, ...kem })),
+      outcome(v124.wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000 })),
+    ])
+    const elapsed = Date.now() - started
+    // 1.2.4 does not check the flag: it reads 1218 bytes as an ML-KEM-768 hello,
+    // answers with a 1122-byte ServerHello and believes it is connected.
+    assert.ifError(server.error)
+    assert.equal(c.bytesWritten, 1602, `${what}: the ClientHello`)
+    assert.equal(s.bytesWritten, 1122, `${what}: 1.2.4 answered an ML-KEM-768 ServerHello`)
+    // The initiator waits for the rest of a 1602-byte ServerHello until its
+    // deadline, then says why, keeping the timeout as cause, and closes.
+    assert.ok(client.error instanceof KxcoPqTlsError, what)
+    assert.equal(client.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024, what)
+    assert.equal(client.error.message, 'no valid ML-KEM-1024 ServerHello before the deadline: a responder on ' +
+      'kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: ' +
+      "upgrade the responder, or pass kem: 'ml-kem-768'", what)
+    assert.equal(client.error.cause?.code, ERR_HANDSHAKE_TIMEOUT, what)
+    assert.ok(elapsed >= deadline && elapsed < deadline + 1500, `${what}: failed after ${elapsed}ms`)
+    assert.ok(c.destroyed, `${what}: the initiator closed its end`)
+    // The 1.2.4 side's channel then ends rather than lingering.
+    const ended = new Promise((res) => { server.value.once('end', res); server.value.once('close', res); server.value.resume() })
+    await within(2000, () => `${what}: the 1.2.4 channel is still open`, ended)
+  }
+
+  // kem: 'ml-kem-768' reaches it.
+  const [c, s] = await pairFor(t)
+  const [client, server] = await Promise.all([
+    wrapStream(c, { role: 'initiator', kem: 'ml-kem-768', handshakeTimeoutMs: 3000 }),
+    v124.wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000 }),
+  ])
+  await exchange(client, server, 'ml-kem-768 to 1.2.4')
+
+  // With identities on both sides, 1.2.4 sends its Finished frame straight
+  // after its 1122-byte ServerHello, so the initiator receives the 1602 bytes it
+  // asked for, a ServerHello it cannot tell is wrong. 1.2.4 then refuses the
+  // initiator's Finished frame and closes. This one fails fast but with the
+  // transport's own error, not ERR_RESPONDER_CANNOT_READ_ML_KEM_1024: at the
+  // Finished stage a close cannot be put down to the ML-KEM set.
+  const [c2, s2] = await pairFor(t)
+  const started = Date.now()
+  const [i2, r2] = await Promise.all([
+    outcome(wrapStream(c2, { role: 'initiator', identity: initId, handshakeTimeoutMs: 3000 })),
+    outcome(v124.wrapStream(s2, { role: 'responder', identity: respId, handshakeTimeoutMs: 3000 })),
+  ])
+  assert.equal(r2.error?.message, 'frame authentication failed')
+  assert.equal(i2.error?.message, 'stream ended during handshake')
+  assert.ok(Date.now() - started < 2000, `with identities: failed after ${Date.now() - started}ms`)
 })
 
 test('wrapStream: two ends on this version agree ML-KEM-1024 over TCP, by default or by name, 1602-byte hellos both ways', async (t) => {

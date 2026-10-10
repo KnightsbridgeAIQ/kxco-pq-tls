@@ -13,9 +13,11 @@ import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mlDsa, mlDsa87 } from 'kxco-post-quantum'
 import { wrapWebSocket } from '../src/websocket.js'
-import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
+import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024 } from '../src/errors.js'
 // The release on npm before ML-KEM-1024, unmodified.
 import * as v140 from 'kxco-pq-tls-140'
+// The last release before responders checked hello flags, unmodified.
+import * as v124 from 'kxco-pq-tls-124'
 
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
@@ -262,6 +264,7 @@ test('wrapWebSocket: a responder holding an identity refuses an initiator withou
   // ML-KEM-1024, the default, the client names an older responder as the
   // likely reason, and keeps the close as the cause.
   assert.ok(client.error instanceof KxcoPqTlsError, 'the client does not complete')
+  assert.equal(client.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
   assert.match(client.error.message, /^the responder closed after an ML-KEM-1024 hello/)
   assert.match(client.error.cause?.message ?? '', /closed during handshake/)
 })
@@ -305,19 +308,29 @@ test('wrapWebSocket: a refused initiator sees the WebSocket close at once, not a
   const elapsed = Date.now() - started
   assert.ok(server.error instanceof KxcoPqTlsError, 'the server refuses')
   assert.ok(client.error instanceof KxcoPqTlsError, 'the client does not complete')
+  assert.equal(client.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
   assert.match(client.error.message, /^the responder closed after an ML-KEM-1024 hello/)
   assert.match(client.error.cause?.message ?? '', /closed during handshake/)
   assert.ok(elapsed < 2000, `the client waited ${elapsed}ms`)
 })
 
 test('wrapWebSocket: a handshake that runs out of time closes the WebSocket', async (t) => {
-  // The server end never answers.
-  const [c, s] = await wsPair(t)
-  const closed = new Promise((res) => s.once('close', res))
-  const err = await wrapWebSocket(c, { role: 'initiator', handshakeTimeoutMs: 200 }).then(
-    () => { throw new Error('expected a timeout') }, (e) => e)
-  assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
-  await within(2000, 'the WebSocket is still open', closed)
+  // The server end never answers. An ML-KEM-768 initiator reports the plain
+  // timeout; on ML-KEM-1024, the default, the deadline names the likely cause
+  // and keeps the timeout as cause.
+  for (const kem of [{ kem: 'ml-kem-768' }, {}]) {
+    const [c, s] = await wsPair(t)
+    const closed = new Promise((res) => s.once('close', res))
+    const err = await wrapWebSocket(c, { role: 'initiator', handshakeTimeoutMs: 200, ...kem }).then(
+      () => { throw new Error('expected a timeout') }, (e) => e)
+    if (kem.kem) {
+      assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
+    } else {
+      assert.equal(err.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
+      assert.equal(err.cause?.code, ERR_HANDSHAKE_TIMEOUT)
+    }
+    await within(2000, 'the WebSocket is still open', closed)
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -377,9 +390,9 @@ test('wrapWebSocket: this initiator given kem: ml-kem-768 reaches a 1.4.0 respon
   }
 })
 
-test('wrapWebSocket: this initiator on ML-KEM-1024, by default or by name, meets a 1.4.0 responder: refused, nothing answered, both ends closed, and the initiator says why', async (t) => {
-  for (const kem of [{}, { kem: 'ml-kem-1024' }]) {
-    const what = kem.kem ?? 'default'
+test('wrapWebSocket: this initiator on ML-KEM-1024, by default or by name, meets a 1.4.0 or 1.2.4 responder: refused, nothing answered, both ends closed, and the initiator says why', async (t) => {
+  for (const [kem, old, version] of [[{}, v140, '1.4.0'], [{ kem: 'ml-kem-1024' }, v140, '1.4.0'], [{}, v124, '1.2.4']]) {
+    const what = `${kem.kem ?? 'default'}, responder ${version}`
     const [c, s] = await wsPair(t)
     const atClient = heard(c)
     const atServer = heard(s)
@@ -387,7 +400,7 @@ test('wrapWebSocket: this initiator on ML-KEM-1024, by default or by name, meets
     const started = Date.now()
     const [client, server] = await Promise.all([
       outcome(wrapWebSocket(c, { role: 'initiator', handshakeTimeoutMs: 3000, ...kem })),
-      outcome(v140.wrapWebSocket(s, { role: 'responder', handshakeTimeoutMs: 3000 })),
+      outcome(old.wrapWebSocket(s, { role: 'responder', handshakeTimeoutMs: 3000 })),
     ])
     const elapsed = Date.now() - started
     // The whole hello arrives as one message, so its length is refused first.
@@ -395,6 +408,7 @@ test('wrapWebSocket: this initiator on ML-KEM-1024, by default or by name, meets
     // The initiator learns of it from the close, at once, not at its deadline,
     // and says what the close most likely means, keeping the close as cause.
     assert.ok(client.error instanceof KxcoPqTlsError, `${what}: the initiator does not complete`)
+    assert.equal(client.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024, what)
     assert.equal(client.error.message, 'the responder closed after an ML-KEM-1024 hello; a responder on ' +
       "kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'", what)
     assert.equal(client.error.cause?.message, 'WebSocket closed during handshake', what)
@@ -448,4 +462,29 @@ test('wrapWebSocket: with mutual authentication, the ML-KEM-1024 flag flipped in
   ])
   assert.match(client.error?.message ?? '', /initiator: peer identity verification failed/)
   assert.match(server.error?.message ?? '', /responder: peer identity verification failed/)
+})
+
+test('wrapWebSocket: a 1218-byte hello that declares ML-KEM-1024 is refused at once, not waited on', async (t) => {
+  // Each WebSocket message is a whole hello, so 1218 bytes with bit 3 set is
+  // malformed: no more of it is coming. Through the handshake functions the
+  // same hello is read as on a stream; see handshake.test.js.
+  const [c, s] = await wsPair(t)
+  const send = c.send.bind(c)
+  let sent = 0
+  c.send = (data, cb) => {
+    const out = Buffer.from(data)
+    if (sent++ === 0) out[1] |= 0x08
+    return send(out, cb)
+  }
+  const started = Date.now()
+  const [client, server] = await Promise.all([
+    outcome(wrapWebSocket(c, { role: 'initiator', kem: 'ml-kem-768', handshakeTimeoutMs: 3000 })),
+    outcome(wrapWebSocket(s, { role: 'responder', handshakeTimeoutMs: 3000 })),
+  ])
+  const elapsed = Date.now() - started
+  assert.ok(server.error instanceof KxcoPqTlsError, 'the responder refuses')
+  assert.equal(server.error.message, 'ClientHello: expected 1602 bytes, got 1218')
+  assert.ok(elapsed < 1000, `the responder took ${elapsed}ms`)
+  // The ML-KEM-768 initiator sees the close as the transport reports it.
+  assert.equal(client.error?.message, 'WebSocket closed during handshake')
 })

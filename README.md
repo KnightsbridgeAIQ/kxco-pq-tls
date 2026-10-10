@@ -217,6 +217,13 @@ The deadline covers the handshake as a whole rather than each message, so a peer
 that dribbles bytes cannot hold the connection open by resetting a per-message
 timer. Pass `handshakeTimeoutMs: 0` to wait without a deadline.
 
+On ML-KEM-1024, the default, a deadline that passes before a usable ServerHello
+has arrived fails with `ERR_RESPONDER_CANNOT_READ_ML_KEM_1024` instead, because
+the likely reason is a responder on 1.2.4 or earlier. The `ERR_HANDSHAKE_TIMEOUT`
+error is its `cause`. A deadline later in the handshake, such as the identity
+mismatch above, is `ERR_HANDSHAKE_TIMEOUT`. See
+[Version compatibility](#version-compatibility).
+
 ### `wrapWebSocket(ws, options)` → `Promise<PqTlsWebSocket>`
 
 Wraps a WebSocket with a post-quantum secure channel. Compatible with the `ws` npm package (Node.js) and the native `WebSocket` API (Cloudflare Workers, browsers, Node.js 22+). Resolves to a `PqTlsWebSocket` once the handshake completes.
@@ -264,9 +271,18 @@ Low-level API. Run the responder side of the handshake. Returns `txKey` (respond
 responderHandshake(send: SendFn, recv: RecvFn, options?: HandshakeOptions): Promise<SessionKeys>
 ```
 
+`recv(n)` may return exactly `n` bytes, as a stream does, or one whole message, as a WebSocket does, and the responder cannot tell which. So a 1218-byte ClientHello that declares ML-KEM-1024 is completed with a second read of 384 bytes, as on a stream. Over a message transport of your own that read waits until the deadline or a close. `wrapWebSocket` knows its transport delivers whole messages and refuses such a hello at once, with `ClientHello: expected 1602 bytes, got 1218`.
+
 ### `KxcoPqTlsError`
 
-Thrown on handshake failure, authentication failure, or malformed frames.
+Thrown on handshake failure, authentication failure, or malformed frames. Two failures carry a stable `code`, both exported:
+
+| `err.code` | When |
+|---|---|
+| `ERR_HANDSHAKE_TIMEOUT` | The handshake deadline passed |
+| `ERR_RESPONDER_CANNOT_READ_ML_KEM_1024` | An ML-KEM-1024 initiator got no ServerHello it could use: the connection closed, or the deadline passed, first. The original error is `err.cause`. |
+
+The codes are for diagnosis. Nothing in this package retries on ML-KEM-768 when it sees one.
 
 ## Handshake protocol
 
@@ -312,10 +328,18 @@ The initiator chooses the ML-KEM set and the responder answers in it. A responde
 const channel = await wrapStream(socket, { role: 'initiator', kem: 'ml-kem-768' })
 ```
 
-How an ML-KEM-1024 hello fails against a responder on 1.4.0 or earlier:
+**There is no automatic fallback to ML-KEM-768.** A fallback would be a downgrade path: anyone able to cut a connection could push both ends down to ML-KEM-768. A caller that must reach an older responder chooses `kem: 'ml-kem-768'` explicitly, for that responder.
 
-- **1.3.0 and 1.4.0** refuse the hello and close the connection without answering. A 2.0.0 initiator then fails at once with `KxcoPqTlsError`: "the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'". The transport's own error is its `cause`. The initiator cannot tell an older responder from one that refused for another reason, such as a responder holding an identity refusing an initiator without one, so the same error appears then. A 1.5.0 initiator reports the close as it comes from the transport.
-- **1.2.4 and earlier** do not check the flag. Over a WebSocket they refuse the hello's length, and 1.2.4 closes the connection. Over a stream they answer with an ML-KEM-768 ServerHello the initiator cannot use, and the initiator fails at its handshake deadline with `ERR_HANDSHAKE_TIMEOUT`.
+What a 2.0.0 initiator on ML-KEM-1024 raises against each older responder. Both explicit errors are `KxcoPqTlsError` with `err.code === ERR_RESPONDER_CANNOT_READ_ML_KEM_1024`, for diagnosis, and keep the original error as `err.cause`.
+
+| Responder | What it does with the ML-KEM-1024 hello | What the initiator raises |
+|---|---|---|
+| 1.3.0 or 1.4.0, any transport | Refuses it and closes the connection without answering | At once: "the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'". The `cause` is the transport's close. |
+| 1.2.4, WebSocket | Refuses its length and closes the connection | At once: the same error |
+| 1.2.4 or earlier, stream | Ignores the flag, answers with a 1122-byte ML-KEM-768 ServerHello and takes itself to be connected | At the handshake deadline: "no valid ML-KEM-1024 ServerHello before the deadline: a responder on kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: upgrade the responder, or pass kem: 'ml-kem-768'". The `cause` is the `ERR_HANDSHAKE_TIMEOUT` error. |
+| 1.2.3 or earlier, WebSocket | Refuses its length and leaves the connection open | At the handshake deadline: the same deadline error |
+
+The initiator sees only a close or a deadline, so it cannot tell an older responder from one that failed for another reason, such as a responder holding an identity that refuses an initiator without one, or a peer that never answers. The same error appears then, and `cause` holds what actually happened. One case gives neither error: with identities at both ends against 1.2.4 over a stream, 1.2.4 sends its Finished frame straight after its 1122-byte ServerHello, so the initiator receives 1602 bytes it cannot tell from a real ServerHello. 1.2.4 then refuses the initiator's Finished frame and closes, and the initiator fails at once with the transport's own error, "stream ended during handshake". A 1.5.0 initiator reports every close or timeout as the transport or the deadline gives it.
 
 Identities keep their own floor: mutual authentication needs 1.2.4 or later at both ends, and ML-DSA-87 on either side needs 1.3.0 or later at both ends.
 
