@@ -1,22 +1,28 @@
 /**
  * kxco-pq-tls handshake protocol v1
  *
- * ClientHello (1218 bytes):
+ * ClientHello (1218 bytes, or 1602 with ML-KEM-1024):
  *   [1]    version = 0x01
  *   [1]    flags   (bit 0 = mutual_auth_requested,
- *                   bit 1 = the initiator signs with ML-DSA-87)
- *   [1184] ML-KEM-768 ephemeral encap key
+ *                   bit 1 = the initiator signs with ML-DSA-87,
+ *                   bit 3 = ML-KEM-1024)
+ *   [1184] ML-KEM-768 ephemeral encap key, or [1568] ML-KEM-1024
  *   [32]   X25519 ephemeral public key
  *
- * ServerHello (1122 bytes):
+ * ServerHello (1122 bytes, or 1602 with ML-KEM-1024):
  *   [1]    version = 0x01
- *   [1]    flags   (bits 0 and 1 echo the ClientHello,
+ *   [1]    flags   (bits 0, 1 and 3 echo the ClientHello,
  *                   bit 2 = the responder signs with ML-DSA-87)
- *   [1088] ML-KEM-768 ciphertext
+ *   [1088] ML-KEM-768 ciphertext, or [1568] ML-KEM-1024
  *   [32]   X25519 ephemeral public key
  *
  * Session keys: HKDF(ss_kem || ss_dh, salt=c_x25519_pk||s_x25519_pk, info="kxco-pq-tls-v1")
- * then split into keyC2S and keyS2C.
+ * then split into keyC2S and keyS2C. With ML-KEM-1024 the info is
+ * "kxco-pq-tls-v1-ml-kem-1024".
+ *
+ * The initiator chooses the ML-KEM set (FIPS 203) and the responder answers in
+ * it. Without bit 3 every message, flag and key is what 1.4.0 sends and
+ * derives. A responder on 1.4.0 or earlier cannot read an ML-KEM-1024 hello.
  *
  * If mutual auth requested, after key establishment both sides exchange a
  * Finished frame (sent encrypted over the new session) containing their
@@ -55,6 +61,7 @@ import {
   kemEncapsulate, kemDecapsulate, x25519DH,
   deriveKeys, sealFrame, openFrame,
   dsaSign, dsaVerify, dsaSetOf, ML_DSA_87, ML_DSA_65, sha256,
+  ML_KEM_768, ML_KEM_1024,
 } from './primitives.js'
 import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from './errors.js'
 
@@ -64,7 +71,14 @@ const FLAG_AUTH    = 0x01
 // ML-DSA-65, so two ML-DSA-65 ends send exactly the flags 1.2.4 sends.
 const FLAG_INITIATOR_87 = 0x02   // ClientHello, echoed in the ServerHello
 const FLAG_RESPONDER_87 = 0x04   // ServerHello
+// The ML-KEM set the initiator chose, declared in the ClientHello and echoed in
+// the ServerHello. Clear for ML-KEM-768, so those hellos are what 1.4.0 sends.
+const FLAG_KEM_1024 = 0x08
 const MSG_FINISHED = 0x01
+
+// The `kem` option. An initiator sends ML-KEM-768 unless told otherwise.
+const KEM_SETS = new Map([['ml-kem-768', ML_KEM_768], ['ml-kem-1024', ML_KEM_1024]])
+const DEFAULT_KEM = ML_KEM_768
 
 // What each side signs names that side, so a Finished frame sent back to the
 // side that made it does not verify as the other side's.
@@ -131,8 +145,11 @@ function withDeadline(ms) {
   }
 }
 
-const CLIENT_HELLO_SIZE = 1218   // 1 + 1 + 1184 + 32
-const SERVER_HELLO_SIZE = 1122   // 1 + 1 + 1088 + 32
+// Version, flags, the ML-KEM encapsulation key or ciphertext, the X25519 key.
+// 1218 and 1122 bytes with ML-KEM-768 (1 + 1 + 1184 + 32, 1 + 1 + 1088 + 32);
+// both 1602 with ML-KEM-1024, whose key and ciphertext are 1568 bytes each.
+const clientHelloSize = (kem) => 1 + 1 + kem.publicKey + 32
+const serverHelloSize = (kem) => 1 + 1 + kem.ciphertext + 32
 
 // Finished plaintext: message type, public key, signature.
 // 7220 bytes for ML-DSA-87 (1 + 2592 + 4627), 5262 for ML-DSA-65 (1 + 1952 + 3309).
@@ -144,6 +161,7 @@ const finishedSize = (set) => 1 + set.publicKey + set.signature
  * recv(n)    → Promise<Buffer> — read exactly n bytes (stream) or one message (WS)
  * options.identity: optional { publicKey, secretKey }, ML-DSA-87 or ML-DSA-65, for mutual auth
  * options.peerPublicKey: optional ML-DSA-87 or ML-DSA-65 public key the peer must prove
+ * options.kem: optional 'ml-kem-768' (the default) or 'ml-kem-1024'
  * Returns { txKey, rxKey } — tx is initiator→responder (C2S), rx is S2C
  * The result also carries peerPublicKey, the key the peer proved, or undefined
  * without mutual auth.
@@ -151,26 +169,30 @@ const finishedSize = (set) => 1 + set.publicKey + set.signature
 export async function initiatorHandshake(send, recv, options = {}) {
   const ownSet    = identitySet(options.identity)
   const pinnedSet = checkPinnedKeyOption(options)
+  const kemSet    = kemSetOf(options.kem)
   const deadline = withDeadline(options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS)
   try {
-    const kem  = generateKemKeypair()
+    const kem  = generateKemKeypair(kemSet)
     const dh   = generateX25519Keypair()
-    const flags = !ownSet ? 0x00 : FLAG_AUTH | (ownSet === ML_DSA_87 ? FLAG_INITIATOR_87 : 0)
+    const flags = (!ownSet ? 0x00 : FLAG_AUTH | (ownSet === ML_DSA_87 ? FLAG_INITIATOR_87 : 0)) |
+      (kemSet === ML_KEM_1024 ? FLAG_KEM_1024 : 0)
 
     const clientHello = buildClientHello(flags, kem.publicKey, dh.publicKey)
     await deadline.guard(send(clientHello))
 
-    const serverHello = await deadline.guard(recv(SERVER_HELLO_SIZE))
-    validateHello(serverHello, SERVER_HELLO_SIZE, 'ServerHello',
-      FLAG_AUTH | FLAG_INITIATOR_87 | FLAG_RESPONDER_87)
+    // The ServerHello is in the set this side chose. Its echo of that choice
+    // is checked by the signatures over the transcript, as the other echoes are.
+    const serverHello = await deadline.guard(recv(serverHelloSize(kemSet)))
+    validateHello(serverHello, serverHelloSize(kemSet), 'ServerHello',
+      FLAG_AUTH | FLAG_INITIATOR_87 | FLAG_RESPONDER_87 | (flags & FLAG_KEM_1024))
 
-    const kemCt       = serverHello.slice(2, 2 + 1088)
-    const serverX25519 = serverHello.slice(2 + 1088)
+    const kemCt       = serverHello.slice(2, 2 + kemSet.ciphertext)
+    const serverX25519 = serverHello.slice(2 + kemSet.ciphertext)
 
-    const ssKem = kemDecapsulate(kemCt, kem.secretKey)
+    const ssKem = kemDecapsulate(kemCt, kem.secretKey, kemSet)
     const ssDh  = x25519DH(dh.secretKey, serverX25519)
     const salt  = concat(dh.publicKey, serverX25519)
-    const { keyC2S, keyS2C } = deriveKeys(ssKem, ssDh, salt)
+    const { keyC2S, keyS2C } = deriveKeys(ssKem, ssDh, salt, kemSet)
 
     let peerPublicKey
     if (options.identity) {
@@ -200,8 +222,18 @@ export async function responderHandshake(send, recv, options = {}) {
   const pinnedSet = checkPinnedKeyOption(options)
   const deadline = withDeadline(options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS)
   try {
-    const clientHello = await deadline.guard(recv(CLIENT_HELLO_SIZE))
-    validateHello(clientHello, CLIENT_HELLO_SIZE, 'ClientHello', FLAG_AUTH | FLAG_INITIATOR_87)
+    // Read the 1218 bytes of an ML-KEM-768 ClientHello, as 1.4.0 does. A stream
+    // hands back exactly that many, so a hello that declares ML-KEM-1024 has 384
+    // more to read. A message transport, such as a WebSocket, has already handed
+    // back the whole hello, 1218 or 1602 bytes, in one read.
+    let clientHello = await deadline.guard(recv(clientHelloSize(ML_KEM_768)))
+    if (clientHello.length === clientHelloSize(ML_KEM_768) && (clientHello[1] & FLAG_KEM_1024)) {
+      const rest = await deadline.guard(recv(clientHelloSize(ML_KEM_1024) - clientHelloSize(ML_KEM_768)))
+      clientHello = Buffer.concat([clientHello, rest])
+    }
+    const kemSet = clientHello[1] & FLAG_KEM_1024 ? ML_KEM_1024 : ML_KEM_768
+    validateHello(clientHello, clientHelloSize(kemSet), 'ClientHello',
+      FLAG_AUTH | FLAG_INITIATOR_87 | FLAG_KEM_1024)
 
     const flags        = clientHello[1]
     // A responder given an identity authenticates every initiator, so it does
@@ -213,14 +245,14 @@ export async function responderHandshake(send, recv, options = {}) {
     // Nor one that has declared a set other than the pinned key's.
     const peerSet = flags & FLAG_INITIATOR_87 ? ML_DSA_87 : ML_DSA_65
     checkPinnedSet(peerSet, pinnedSet, 'responder')
-    const clientKemEk  = clientHello.slice(2, 2 + 1184)
-    const clientX25519 = clientHello.slice(2 + 1184)
+    const clientKemEk  = clientHello.slice(2, 2 + kemSet.publicKey)
+    const clientX25519 = clientHello.slice(2 + kemSet.publicKey)
 
-    const { ciphertext, sharedSecret: ssKem } = kemEncapsulate(clientKemEk)
+    const { ciphertext, sharedSecret: ssKem } = kemEncapsulate(clientKemEk, kemSet)
     const dh  = generateX25519Keypair()
     const ssDh = x25519DH(dh.secretKey, clientX25519)
     const salt = concat(clientX25519, dh.publicKey)
-    const { keyC2S, keyS2C } = deriveKeys(ssKem, ssDh, salt)
+    const { keyC2S, keyS2C } = deriveKeys(ssKem, ssDh, salt, kemSet)
 
     const serverFlags = ownSet === ML_DSA_87 ? flags | FLAG_RESPONDER_87 : flags
     const serverHello = buildServerHello(serverFlags, ciphertext, dh.publicKey)
@@ -247,20 +279,20 @@ export async function responderHandshake(send, recv, options = {}) {
 // ---------------------------------------------------------------------------
 
 function buildClientHello(flags, kemEk, x25519Pk) {
-  const buf = new Uint8Array(CLIENT_HELLO_SIZE)
+  const buf = new Uint8Array(1 + 1 + kemEk.length + 32)
   buf[0] = VERSION
   buf[1] = flags
   buf.set(kemEk,    2)
-  buf.set(x25519Pk, 2 + 1184)
+  buf.set(x25519Pk, 2 + kemEk.length)
   return Buffer.from(buf)
 }
 
 function buildServerHello(flags, kemCt, x25519Pk) {
-  const buf = new Uint8Array(SERVER_HELLO_SIZE)
+  const buf = new Uint8Array(1 + 1 + kemCt.length + 32)
   buf[0] = VERSION
   buf[1] = flags
   buf.set(kemCt,    2)
-  buf.set(x25519Pk, 2 + 1088)
+  buf.set(x25519Pk, 2 + kemCt.length)
   return Buffer.from(buf)
 }
 
@@ -323,6 +355,18 @@ function verifyFinished(plaintext, set, signed, role) {
 }
 
 const sizeOf = (key) => (key instanceof Uint8Array ? `${key.length} bytes` : typeof key)
+
+// The ML-KEM set an initiator's `kem` option names. Checked before anything is
+// sent, so a misspelt set fails here rather than quietly sending the default.
+function kemSetOf(kem) {
+  if (kem === undefined) return DEFAULT_KEM
+  const set = KEM_SETS.get(kem)
+  if (!set)
+    throw new KxcoPqTlsError(
+      `kem must be 'ml-kem-768' or 'ml-kem-1024', got ${typeof kem === 'string' ? `'${kem}'` : typeof kem}`,
+    )
+  return set
+}
 
 // The set this side signs with, named by the length of its own public key.
 // Checked before anything is sent, so a key of the wrong size fails here with

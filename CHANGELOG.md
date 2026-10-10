@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.5.0 (2026-10-10)
+
+**ML-KEM-1024 for the session key, when the initiator asks for it.** An
+initiator given `kem: 'ml-kem-1024'` combines ML-KEM-1024 (NIST FIPS 203,
+security category 5) with X25519. It declares the set in bit 3 of its
+ClientHello, and both hellos are 1602 bytes. The session key takes its own HKDF
+label, `kxco-pq-tls-v1-ml-kem-1024`. The default stays ML-KEM-768.
+
+**A responder accepts both sets** and answers in the one the initiator chose,
+echoing bit 3 in its ServerHello. On a stream it reads the 1218-byte hello as
+before and reads the other 384 bytes only when bit 3 is set. Over a WebSocket,
+or any transport that hands over a whole message per read, it takes a 1218 or
+1602-byte hello by its flag. Both hellos are inside the transcript each side
+signs, so with mutual authentication a bit 3 changed in flight fails the
+Finished check.
+
+**Without `kem: 'ml-kem-1024'` nothing changes on the wire.** Every message,
+flag and key label is what 1.4.0 sends and derives, so 1.5.0 and 1.4.0
+interoperate in both roles. A responder on 1.4.0 or earlier cannot read an
+ML-KEM-1024 hello, so upgrade responders first. The README has a version
+compatibility table.
+
+A `kem` value other than `'ml-kem-768'` or `'ml-kem-1024'` is refused with
+`KxcoPqTlsError` before anything is sent. The typings add `kem` to
+`ChannelOptions` and `HandshakeOptions`.
+
+The tests run the handshake against kxco-pq-tls 1.4.0 from npm over TCP, over
+WebSockets, and through the handshake functions on a transport of their own.
+
 ## 1.4.0 (2026-10-09)
 
 Runtime support. No change to the API or its behaviour.

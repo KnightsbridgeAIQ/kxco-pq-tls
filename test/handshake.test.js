@@ -8,6 +8,8 @@ import { initiatorHandshake, responderHandshake } from '../src/handshake.js'
 import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
 import { sealFrame, openFrame } from '../src/primitives.js'
 import { mlDsa, mlDsa87 } from 'kxco-post-quantum'
+// The release on npm before ML-KEM-1024, unmodified.
+import * as v140 from 'kxco-pq-tls-140'
 
 // Generate once and reuse across auth tests — keygen is the expensive step
 const initId = mlDsa.ml_dsa65.keygen()
@@ -575,4 +577,236 @@ test('a hello with a flag this version does not know is refused', async () => {
     outcome(responderHandshake(ch.responderSend, ch.responderRecv, { identity: respId, ...t })),
   ])
   assert.match(init.error?.message ?? '', /ServerHello: unknown flags 0x9/)
+})
+
+// ---------------------------------------------------------------------------
+// ML-KEM-1024, and the handshake against 1.4.0 from npm
+// ---------------------------------------------------------------------------
+
+// A transport of a caller's own, as the handshake functions take one. On
+// 'stream', recv(n) resolves with exactly n bytes however they were sent, as a
+// socket read does. On 'messages', recv resolves with one whole message
+// whatever n asks for, as a WebSocket does. close() fails the read waiting now
+// and every read after it, as a closed connection does; bytes never read stay
+// counted in unread(), and no read can reach them. `tamper(role, index, data)`
+// may change each message on its way.
+function rawLink(kind, tamper = (_role, _index, data) => data) {
+  const pipe = () => ({ chunks: [], waiting: null, closed: false, reads: [] })
+  const toResponder = pipe()
+  const toInitiator = pipe()
+  const sent = { initiator: [], responder: [] }
+  const unreadIn = (p) => p.chunks.reduce((n, c) => n + c.length, 0)
+  const settle = (p) => {
+    if (!p.waiting) return
+    const { n, resolve, reject } = p.waiting
+    if (p.closed) { p.waiting = null; reject(new Error('the connection closed')); return }
+    if (kind === 'messages') {
+      if (p.chunks.length) { p.waiting = null; resolve(p.chunks.shift()) }
+      return
+    }
+    if (unreadIn(p) < n) return
+    p.waiting = null
+    const all = Buffer.concat(p.chunks)
+    p.chunks = all.length > n ? [all.subarray(n)] : []
+    resolve(Buffer.from(all.subarray(0, n)))
+  }
+  const send = (role, p) => async (data) => {
+    const index = sent[role].push(Buffer.from(data)) - 1
+    if (p.closed) throw new Error('the connection closed')
+    p.chunks.push(tamper(role, index, Buffer.from(data)))
+    settle(p)
+  }
+  const recv = (p) => (n) => new Promise((resolve, reject) => {
+    p.reads.push(n)
+    p.waiting = { n, resolve, reject }
+    settle(p)
+  })
+  return {
+    sent,
+    initiatorSend: send('initiator', toResponder), initiatorRecv: recv(toInitiator),
+    responderSend: send('responder', toInitiator), responderRecv: recv(toResponder),
+    responderReads: toResponder.reads,
+    unread: () => ({ byResponder: unreadIn(toResponder), byInitiator: unreadIn(toInitiator) }),
+    close() { for (const p of [toResponder, toInitiator]) { p.closed = true; settle(p) } },
+  }
+}
+
+// A side that closes the link when its handshake fails, as wrapStream and
+// wrapWebSocket close theirs.
+const closesOnFailure = (link, p) => p.catch((err) => { link.close(); throw err })
+
+const LINKS = ['stream', 'messages']
+const IDENTITIES = [
+  ['no identities', {}, {}],
+  ['ML-DSA-87 identities', { identity: initId87 }, { identity: respId87 }],
+]
+const quick = { handshakeTimeoutMs: 3000 }
+
+test('an initiator on 1.4.0 reaches this responder on ML-KEM-768, with the same keys, on a byte stream and on messages', async () => {
+  for (const kind of LINKS) {
+    for (const [label, i, r] of IDENTITIES) {
+      const what = `${kind}, ${label}`
+      const link = rawLink(kind)
+      const [init, resp] = await Promise.all([
+        v140.initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...quick, ...i }),
+        responderHandshake(link.responderSend, link.responderRecv, { ...quick, ...r }),
+      ])
+      assert.deepEqual(init.txKey, resp.rxKey, what)
+      assert.deepEqual(init.rxKey, resp.txKey, what)
+      assert.equal(link.sent.initiator[0].length, 1218, what)
+      assert.equal(link.sent.responder[0].length, 1122, what)
+      assert.equal(link.sent.responder[0][1] & 0x08, 0, `${what}: the ServerHello declares ML-KEM-768`)
+      if (i.identity) assert.ok(sameKey(resp.peerPublicKey, i.identity.publicKey), what)
+    }
+  }
+})
+
+test('this initiator on ML-KEM-768, by default or by name, reaches a 1.4.0 responder with the same keys', async () => {
+  for (const kind of LINKS) {
+    for (const kem of [{}, { kem: 'ml-kem-768' }]) {
+      for (const [label, i, r] of IDENTITIES) {
+        const what = `${kind}, ${kem.kem ?? 'default'}, ${label}`
+        const link = rawLink(kind)
+        const [init, resp] = await Promise.all([
+          initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...quick, ...kem, ...i }),
+          v140.responderHandshake(link.responderSend, link.responderRecv, { ...quick, ...r }),
+        ])
+        assert.deepEqual(init.txKey, resp.rxKey, what)
+        assert.deepEqual(init.rxKey, resp.txKey, what)
+        assert.equal(link.sent.initiator[0].length, 1218, what)
+        assert.equal(link.sent.initiator[0][1] & 0x08, 0, `${what}: the ClientHello declares ML-KEM-768`)
+        if (r.identity) assert.ok(sameKey(init.peerPublicKey, r.identity.publicKey), what)
+      }
+    }
+  }
+})
+
+test('this initiator on ML-KEM-1024 meets a 1.4.0 responder: it refuses the hello, answers nothing and the link closes', async () => {
+  for (const kind of LINKS) {
+    const link = rawLink(kind)
+    const started = Date.now()
+    const [init, resp] = await Promise.all([
+      outcome(initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...quick, kem: 'ml-kem-1024' })),
+      outcome(closesOnFailure(link, v140.responderHandshake(link.responderSend, link.responderRecv, quick))),
+    ])
+    // On a byte stream it reads 1218 bytes and refuses the flag; on messages
+    // the whole 1602-byte hello arrives and it refuses the length.
+    assert.equal(resp.error?.message,
+      kind === 'stream' ? 'ClientHello: unknown flags 0x8' : 'ClientHello: expected 1218 bytes, got 1602', kind)
+    assert.equal(link.sent.initiator[0].length, 1602, kind)
+    assert.deepEqual(link.responderReads, [1218], `${kind}: the responder read once`)
+    assert.equal(link.sent.responder.length, 0, `${kind}: the responder answered nothing`)
+    // On a byte stream the 384 bytes behind its read are never read: the link
+    // is closed, so no read reaches them.
+    assert.deepEqual(link.unread(), { byResponder: kind === 'stream' ? 384 : 0, byInitiator: 0 }, kind)
+    await assert.rejects(link.responderRecv(384), /the connection closed/)
+    // The initiator learns of it from the close, at once, not at its deadline.
+    assert.equal(init.error?.message, 'the connection closed', kind)
+    assert.ok(Date.now() - started < 2000, `${kind}: the initiator waited ${Date.now() - started}ms`)
+  }
+})
+
+test('two ends on this version agree ML-KEM-1024: 1602-byte hellos both ways, the flag declared and echoed', async () => {
+  // [ClientHello flags, ServerHello flags] for each pairing of identities.
+  const flags = { 'no identities': [0x08, 0x08], 'ML-DSA-87 identities': [0x0b, 0x0f] }
+  for (const kind of LINKS) {
+    for (const [label, i, r] of IDENTITIES) {
+      const what = `${kind}, ${label}`
+      const link = rawLink(kind)
+      const [init, resp] = await Promise.all([
+        initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...quick, kem: 'ml-kem-1024', ...i }),
+        responderHandshake(link.responderSend, link.responderRecv, { ...quick, ...r }),
+      ])
+      assert.deepEqual(init.txKey, resp.rxKey, what)
+      assert.deepEqual(init.rxKey, resp.txKey, what)
+      const [clientHello] = link.sent.initiator
+      const [serverHello] = link.sent.responder
+      assert.equal(clientHello.length, 1602, what)
+      assert.equal(serverHello.length, 1602, what)
+      assert.deepEqual([clientHello[1], serverHello[1]], flags[label], what)
+      // A byte stream gives the responder the 1218 bytes it asks for first,
+      // then the 384 the flag says follow; messages give it the whole hello.
+      assert.deepEqual(link.responderReads.slice(0, 2),
+        kind === 'stream' ? [1218, 384] : [1218, ...(i.identity ? [7236] : [])], what)
+      if (i.identity) {
+        assert.ok(sameKey(init.peerPublicKey, r.identity.publicKey), what)
+        assert.ok(sameKey(resp.peerPublicKey, i.identity.publicKey), what)
+      }
+    }
+  }
+})
+
+test('with mutual authentication, the ML-KEM-1024 flag flipped in flight fails the Finished check', async () => {
+  const opts = { handshakeTimeoutMs: 2000 }
+  for (const kind of LINKS) {
+    // The ServerHello's echo, cleared on its way. The initiator's sizes and
+    // keys follow from its own choice, so the session keys agree, and only the
+    // signatures over both hellos can refuse it.
+    const link = rawLink(kind, (role, index, data) => {
+      if (role === 'responder' && index === 0) data[1] ^= 0x08
+      return data
+    })
+    const [init, resp] = await Promise.all([
+      outcome(initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...opts, identity: initId87, kem: 'ml-kem-1024' })),
+      outcome(responderHandshake(link.responderSend, link.responderRecv, { ...opts, identity: respId87 })),
+    ])
+    assert.match(init.error?.message ?? '', /initiator: peer identity verification failed/, kind)
+    assert.match(resp.error?.message ?? '', /responder: peer identity verification failed/, kind)
+  }
+
+  // The ClientHello's flag, cleared on its way. On a byte stream the responder
+  // reads an ML-KEM-768 hello, and the 384 bytes behind it break the
+  // initiator's Finished frame. On messages the length refuses it first.
+  for (const kind of LINKS) {
+    const link = rawLink(kind, (role, index, data) => {
+      if (role === 'initiator' && index === 0) data[1] ^= 0x08
+      return data
+    })
+    const [init, resp] = await Promise.all([
+      outcome(closesOnFailure(link, initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...opts, identity: initId87, kem: 'ml-kem-1024' }))),
+      outcome(closesOnFailure(link, responderHandshake(link.responderSend, link.responderRecv, { ...opts, identity: respId87 }))),
+    ])
+    assert.equal(resp.error?.message,
+      kind === 'stream' ? 'frame authentication failed' : 'ClientHello: expected 1218 bytes, got 1602', kind)
+    assert.ok(init.error, `${kind}: the initiator does not complete`)
+  }
+})
+
+test('an ML-KEM-1024 hello with a flag this version does not know is refused', async () => {
+  for (const kind of LINKS) {
+    let link = rawLink(kind, (role, index, data) => {
+      if (role === 'initiator' && index === 0) data[1] |= 0x10
+      return data
+    })
+    const [, resp] = await Promise.all([
+      outcome(closesOnFailure(link, initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...quick, kem: 'ml-kem-1024' }))),
+      outcome(closesOnFailure(link, responderHandshake(link.responderSend, link.responderRecv, quick))),
+    ])
+    assert.equal(resp.error?.message, 'ClientHello: unknown flags 0x18', kind)
+
+    link = rawLink(kind, (role, index, data) => {
+      if (role === 'responder' && index === 0) data[1] |= 0x10
+      return data
+    })
+    const [init] = await Promise.all([
+      outcome(closesOnFailure(link, initiatorHandshake(link.initiatorSend, link.initiatorRecv, { ...quick, kem: 'ml-kem-1024' }))),
+      outcome(closesOnFailure(link, responderHandshake(link.responderSend, link.responderRecv, quick))),
+    ])
+    assert.equal(init.error?.message, 'ServerHello: unknown flags 0x18', kind)
+  }
+})
+
+test('a kem option that names no ML-KEM set is refused before anything is sent', async () => {
+  const never = () => new Promise(() => {})
+  const cases = [['ml-kem-512', "'ml-kem-512'"], ['ML-KEM-1024', "'ML-KEM-1024'"], [1024, 'number'], [null, 'object']]
+  for (const [kem, shown] of cases) {
+    let sent = 0
+    await assert.rejects(
+      initiatorHandshake(async () => { sent++ }, never, { kem, handshakeTimeoutMs: 300 }),
+      (err) => err instanceof KxcoPqTlsError &&
+        err.message === `kem must be 'ml-kem-768' or 'ml-kem-1024', got ${shown}`,
+      String(kem),
+    )
+    assert.equal(sent, 0, `${String(kem)}: nothing sent`)
+  }
 })

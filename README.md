@@ -29,7 +29,7 @@ Wraps any duplex stream or WebSocket with hybrid ML-KEM-768 (NIST FIPS 203) and 
 - **United States:** [Executive Order 14412](https://www.federalregister.gov/documents/2026/06/25/2026-12909/securing-the-nation-against-advanced-cryptographic-attacks), signed on 22 June 2026, moves federal high-value and high-impact systems to post-quantum key establishment by 31 December 2030 and to post-quantum signatures by 31 December 2031. [OMB M-26-15](https://www.whitehouse.gov/wp-content/uploads/2026/06/M-26-15-Execution-of-the-Migration-to-Post-Quantum-Cryptography.pdf) requires PQC-agile libraries for all new applications.
 - **United Kingdom:** the [NCSC](https://www.ncsc.gov.uk/guidance/pqc-migration-timelines) sets 2028, 2031 and 2035 as its migration milestones.
 
-[Quick start](#quick-start) · [Handshake protocol](#handshake-protocol) · [For institutions](#for-institutions) · [TLS settings](./TLS.md) · [Assessment notes](./ASSESSMENT.md) · [Changelog](./CHANGELOG.md) · [kxco.ai](https://kxco.ai)
+[Quick start](#quick-start) · [Handshake protocol](#handshake-protocol) · [Version compatibility](#version-compatibility) · [For institutions](#for-institutions) · [TLS settings](./TLS.md) · [Assessment notes](./ASSESSMENT.md) · [Changelog](./CHANGELOG.md) · [kxco.ai](https://kxco.ai)
 
 ## What this is for
 
@@ -173,6 +173,7 @@ Wraps a Node.js `Duplex` stream (e.g. `net.Socket`) with a post-quantum secure c
 ```ts
 interface ChannelOptions {
   role: 'initiator' | 'responder'
+  kem?: 'ml-kem-768' | 'ml-kem-1024'  // the initiator's ML-KEM set, default 'ml-kem-768'; responders accept both
   identity?: { publicKey: Uint8Array, secretKey: Uint8Array }  // ML-DSA-87 or ML-DSA-65 keypair
   peerPublicKey?: Uint8Array    // ML-DSA-87 or ML-DSA-65 key the peer must prove; needs identity
   handshakeTimeoutMs?: number   // total handshake deadline, default 30000, 0 disables
@@ -270,28 +271,52 @@ Thrown on handshake failure, authentication failure, or malformed frames.
 ## Handshake protocol
 
 ```
-ClientHello (1218 bytes):
+ClientHello (1218 bytes, or 1602 with ML-KEM-1024):
   [1]    version = 0x01
   [1]    flags   (bit 0 = mutual_auth_requested,
-                  bit 1 = the initiator signs with ML-DSA-87)
-  [1184] ML-KEM-768 ephemeral encapsulation key
+                  bit 1 = the initiator signs with ML-DSA-87,
+                  bit 3 = ML-KEM-1024)
+  [1184] ML-KEM-768 ephemeral encapsulation key, or [1568] ML-KEM-1024
   [32]   X25519 ephemeral public key
 
-ServerHello (1122 bytes):
+ServerHello (1122 bytes, or 1602 with ML-KEM-1024):
   [1]    version = 0x01
-  [1]    flags   (bits 0 and 1 echo the ClientHello,
+  [1]    flags   (bits 0, 1 and 3 echo the ClientHello,
                   bit 2 = the responder signs with ML-DSA-87)
-  [1088] ML-KEM-768 ciphertext
+  [1088] ML-KEM-768 ciphertext, or [1568] ML-KEM-1024
   [32]   X25519 ephemeral public key
 
-Session keys: HKDF(ss_kem || ss_dh, salt = c_x25519_pk || s_x25519_pk, info = "kxco-pq-tls-v1")
+Session keys: HKDF(ss_kem || ss_dh, salt = c_x25519_pk || s_x25519_pk, info = "kxco-pq-tls-v1"),
+              with info = "kxco-pq-tls-v1-ml-kem-1024" for ML-KEM-1024
 ```
+
+The initiator chooses the ML-KEM set (NIST FIPS 203) and declares ML-KEM-1024 in bit 3 of its ClientHello. The responder answers in that set and echoes the bit. On a stream the responder reads the 1218 bytes of an ML-KEM-768 hello, then the 384 that follow when bit 3 is set; over a WebSocket the whole hello arrives as one message. Without bit 3, every message, flag and key is what 1.4.0 sends and derives.
 
 If mutual authentication is requested, both sides exchange a `Finished` frame (encrypted under the new session keys) containing their ML-DSA public key and a signature over `SHA-256(label || SHA-256(clientHello || serverHello))`, where the label is `kxco-pq-tls-v1-finished-initiator` or `kxco-pq-tls-v1-finished-responder` for the side that signs. A responder holding an identity refuses a ClientHello that does not request it.
 
-Each side declares its parameter set in the hello it sends, so the peer knows the size of the `Finished` frame before it decrypts it: 7220 bytes for ML-DSA-87 and 5262 for ML-DSA-65, plus a 16-byte tag. Both hellos are inside the signed transcript, so each signature also covers the set each side declared. A `Finished` frame of the wrong size for its sender's declared set is refused, a pinned `peerPublicKey` fixes the set the peer must declare, and a hello carrying a flag this version does not know is refused. With ML-DSA-65 at both ends the set flags are clear and every message has the layout and flags 1.2.4 sends.
+Each side declares its parameter set in the hello it sends, so the peer knows the size of the `Finished` frame before it decrypts it: 7220 bytes for ML-DSA-87 and 5262 for ML-DSA-65, plus a 16-byte tag. Both hellos are inside the signed transcript, so each signature also covers the set each side declared, and the ML-KEM set: an ML-KEM bit changed in flight fails the `Finished` check. A `Finished` frame of the wrong size for its sender's declared set is refused, a pinned `peerPublicKey` fixes the set the peer must declare, and a hello carrying a flag this version does not know is refused. With ML-DSA-65 at both ends the set flags are clear and every message has the layout and flags 1.2.4 sends.
 
 Session encryption uses AES-256-GCM with a per-message sequence number as the nonce. After mutual authentication the Finished frames take sequence 0 in each direction and records start at 1, so no nonce repeats under a key.
+
+## Version compatibility
+
+The initiator chooses the ML-KEM set and the responder answers in it. A responder on 1.5.0 or later reads both sets, so upgrade responders before any initiator asks for ML-KEM-1024.
+
+| The initiator sends | Responder 1.5.0 or later | Responder 1.4.0 or earlier |
+|---|---|---|
+| ML-KEM-768: 1.4.0 and earlier, and 1.5.0 by default | Connects on ML-KEM-768 | Connects on ML-KEM-768, as before |
+| ML-KEM-1024: 1.5.0 with `kem: 'ml-kem-1024'` | Connects on ML-KEM-1024 | Cannot read the hello; the handshake fails |
+
+```js
+const channel = await wrapStream(socket, { role: 'initiator', kem: 'ml-kem-1024' })
+```
+
+How an ML-KEM-1024 hello fails against a responder on 1.4.0 or earlier:
+
+- **1.3.0 and 1.4.0** refuse the hello and close the connection without answering, so the initiator's handshake fails at once, as a closed connection.
+- **1.2.4 and earlier** do not check the flag. Over a WebSocket they refuse the hello's length, and 1.2.4 closes the connection. Over a stream they answer with an ML-KEM-768 ServerHello the initiator cannot use, and the initiator fails at its handshake deadline with `ERR_HANDSHAKE_TIMEOUT`.
+
+Identities keep their own floor: mutual authentication needs 1.2.4 or later at both ends, and ML-DSA-87 on either side needs 1.3.0 or later at both ends.
 
 ## The KXCO post-quantum family
 

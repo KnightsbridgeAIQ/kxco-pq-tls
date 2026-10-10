@@ -10,6 +10,8 @@ import { wrapStream } from '../src/stream.js'
 import { responderHandshake } from '../src/handshake.js'
 import { openFrame } from '../src/primitives.js'
 import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT } from '../src/errors.js'
+// The release on npm before ML-KEM-1024, unmodified.
+import * as v140 from 'kxco-pq-tls-140'
 
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
@@ -437,4 +439,115 @@ test('wrapStream: a handshake that runs out of time closes the connection', asyn
     () => { throw new Error('expected a timeout') }, (e) => e)
   assert.equal(err.code, ERR_HANDSHAKE_TIMEOUT)
   await within(2000, () => 'the connection is still open', closed)
+})
+
+// ---------------------------------------------------------------------------
+// ML-KEM-1024, and streams against 1.4.0 from npm
+// ---------------------------------------------------------------------------
+
+// One record each way over two connected channels, the responder first.
+async function exchange(client, server, what) {
+  server.write('from the responder')
+  const down = await within(3000, () => `${what}: nothing reached the initiator`, new Promise((res) => client.once('data', res)))
+  assert.equal(down.toString(), 'from the responder', what)
+  client.write('from the initiator')
+  const up = await within(3000, () => `${what}: nothing reached the responder`, new Promise((res) => server.once('data', res)))
+  assert.equal(up.toString(), 'from the initiator', what)
+}
+
+const IDENTITIES = [
+  ['no identities', {}, {}],
+  ['ML-DSA-87 identities', { identity: initId87 }, { identity: respId87 }],
+]
+
+test('wrapStream: an initiator on 1.4.0 reaches this responder on ML-KEM-768 over TCP', async (t) => {
+  for (const [label, i, r] of IDENTITIES) {
+    const [c, s] = await pairFor(t)
+    const [client, server] = await Promise.all([
+      v140.wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 3000, ...i }),
+      wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000, ...r }),
+    ])
+    if (!i.identity) {
+      assert.equal(c.bytesWritten, 1218, `${label}: the ClientHello`)
+      assert.equal(s.bytesWritten, 1122, `${label}: the ServerHello`)
+    }
+    await exchange(client, server, label)
+  }
+})
+
+test('wrapStream: this initiator on ML-KEM-768, by default or by name, reaches a 1.4.0 responder over TCP', async (t) => {
+  for (const kem of [{}, { kem: 'ml-kem-768' }]) {
+    for (const [label, i, r] of IDENTITIES) {
+      const what = `${kem.kem ?? 'default'}, ${label}`
+      const [c, s] = await pairFor(t)
+      const [client, server] = await Promise.all([
+        wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 3000, ...kem, ...i }),
+        v140.wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000, ...r }),
+      ])
+      if (!i.identity) assert.equal(c.bytesWritten, 1218, `${what}: the ClientHello`)
+      await exchange(client, server, what)
+    }
+  }
+})
+
+test('wrapStream: this initiator on ML-KEM-1024 meets a 1.4.0 responder: refused, nothing answered, both ends closed', async (t) => {
+  const [c, s] = await pairFor(t)
+  const started = Date.now()
+  const [client, server] = await Promise.all([
+    outcome(wrapStream(c, { role: 'initiator', kem: 'ml-kem-1024', handshakeTimeoutMs: 3000 })),
+    outcome(v140.wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000 })),
+  ])
+  const elapsed = Date.now() - started
+  assert.equal(server.error?.message, 'ClientHello: unknown flags 0x8')
+  assert.equal(c.bytesWritten, 1602, 'the ClientHello')
+  assert.equal(s.bytesWritten, 0, 'the responder answered nothing')
+  assert.equal(c.bytesRead, 0, 'nothing reached the initiator')
+  assert.ok(s.destroyed, 'the responder closed the connection, and the rest of the hello with it')
+  assert.ok(c.destroyed, 'the initiator closed its end')
+  // The initiator learns of it from the close, at once, not at its deadline.
+  assert.equal(client.error?.message, 'stream ended during handshake')
+  assert.ok(elapsed < 2000, `the initiator waited ${elapsed}ms`)
+})
+
+test('wrapStream: two ends on this version agree ML-KEM-1024 over TCP, 1602-byte hellos both ways', async (t) => {
+  for (const [label, i, r] of IDENTITIES) {
+    const [c, s] = await pairFor(t)
+    const [client, server] = await Promise.all([
+      wrapStream(c, { role: 'initiator', kem: 'ml-kem-1024', handshakeTimeoutMs: 3000, ...i }),
+      wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000, ...r }),
+    ])
+    if (!i.identity) {
+      assert.equal(c.bytesWritten, 1602, `${label}: the ClientHello`)
+      assert.equal(s.bytesWritten, 1602, `${label}: the ServerHello`)
+    } else {
+      assert.ok(sameKey(client.peerPublicKey, r.identity.publicKey), label)
+      assert.ok(sameKey(server.peerPublicKey, i.identity.publicKey), label)
+    }
+    await exchange(client, server, label)
+  }
+})
+
+test('wrapStream: with mutual authentication, the ML-KEM-1024 flag flipped in flight fails the Finished check', async () => {
+  // An in-memory stream pair that flips bit 3 of the first thing the
+  // responder writes, its ServerHello.
+  let a = null
+  let b = null
+  let writes = 0
+  a = new Duplex({ read() {}, write(c, _e, cb) { b.push(c); cb() }, final(cb) { b.push(null); cb() } })
+  b = new Duplex({
+    read() {},
+    write(c, _e, cb) {
+      const data = Buffer.from(c)
+      if (writes++ === 0) data[1] ^= 0x08
+      a.push(data)
+      cb()
+    },
+    final(cb) { a.push(null); cb() },
+  })
+  const [client, server] = await Promise.all([
+    outcome(wrapStream(a, { role: 'initiator', identity: initId87, kem: 'ml-kem-1024', handshakeTimeoutMs: 3000 })),
+    outcome(wrapStream(b, { role: 'responder', identity: respId87, handshakeTimeoutMs: 3000 })),
+  ])
+  assert.match(client.error?.message ?? '', /initiator: peer identity verification failed/)
+  assert.match(server.error?.message ?? '', /responder: peer identity verification failed/)
 })

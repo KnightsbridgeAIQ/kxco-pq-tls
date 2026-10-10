@@ -14,8 +14,22 @@ export interface PqIdentity {
   secretKey: Uint8Array | Buffer
 }
 
+/**
+ * An ML-KEM parameter set (NIST FIPS 203) for the session key. ML-KEM-1024 is
+ * NIST security category 5 and ML-KEM-768 category 3. A responder on 1.4.0 or
+ * earlier reads only ML-KEM-768.
+ */
+export type KemSet = 'ml-kem-768' | 'ml-kem-1024'
+
 export interface ChannelOptions {
   role:      'initiator' | 'responder'
+  /**
+   * The ML-KEM set the initiator's hello uses. Defaults to `'ml-kem-768'`.
+   * Read by the initiator only: a responder on 1.5.0 or later accepts either
+   * set and answers in the one the initiator chose. Any other value is refused
+   * with `KxcoPqTlsError` before anything is sent.
+   */
+  kem?:      KemSet
   /**
    * ML-DSA-87 or ML-DSA-65 keypair for mutual authentication. Optional. A
    * responder given one refuses an initiator that does not authenticate too.
@@ -48,6 +62,8 @@ export interface ChannelOptions {
 }
 
 export interface HandshakeOptions {
+  /** The ML-KEM set the initiator's hello uses. Initiator only. See `ChannelOptions`. */
+  kem?: KemSet
   identity?: PqIdentity
   /** The ML-DSA-87 or ML-DSA-65 public key the peer must prove. See `ChannelOptions`. */
   peerPublicKey?: Uint8Array | Buffer
@@ -80,7 +96,8 @@ export interface PqTlsStream extends Duplex {
  * channel. Resolves once the handshake completes. If the handshake fails, the
  * socket is destroyed before the promise rejects.
  *
- * Key exchange: ML-KEM-768 + X25519. Session encryption: AES-256-GCM.
+ * Key exchange: ML-KEM-768, or ML-KEM-1024 with `kem: 'ml-kem-1024'`, + X25519.
+ * Session encryption: AES-256-GCM.
  * Optional mutual auth via ML-DSA-87 or ML-DSA-65 Finished frames.
  */
 export function wrapStream(socket: Duplex, options: ChannelOptions): Promise<PqTlsStream>
