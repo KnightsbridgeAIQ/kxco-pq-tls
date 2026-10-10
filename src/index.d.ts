@@ -24,10 +24,15 @@ export type KemSet = 'ml-kem-768' | 'ml-kem-1024'
 export interface ChannelOptions {
   role:      'initiator' | 'responder'
   /**
-   * The ML-KEM set the initiator's hello uses. Defaults to `'ml-kem-768'`.
+   * The ML-KEM set the initiator's hello uses. Defaults to `'ml-kem-1024'`
+   * from 2.0.0; pass `'ml-kem-768'` to reach a responder on 1.4.0 or earlier.
    * Read by the initiator only: a responder on 1.5.0 or later accepts either
    * set and answers in the one the initiator chose. Any other value is refused
    * with `KxcoPqTlsError` before anything is sent.
+   *
+   * When the connection closes while an ML-KEM-1024 initiator waits for the
+   * ServerHello, the handshake fails with a `KxcoPqTlsError` that names the
+   * likely cause, an older responder, and keeps the transport's error as `cause`.
    */
   kem?:      KemSet
   /**
@@ -96,7 +101,7 @@ export interface PqTlsStream extends Duplex {
  * channel. Resolves once the handshake completes. If the handshake fails, the
  * socket is destroyed before the promise rejects.
  *
- * Key exchange: ML-KEM-768, or ML-KEM-1024 with `kem: 'ml-kem-1024'`, + X25519.
+ * Key exchange: ML-KEM-1024, or ML-KEM-768 with `kem: 'ml-kem-768'`, + X25519.
  * Session encryption: AES-256-GCM.
  * Optional mutual auth via ML-DSA-87 or ML-DSA-65 Finished frames.
  */

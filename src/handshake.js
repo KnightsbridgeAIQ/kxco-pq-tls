@@ -76,9 +76,9 @@ const FLAG_RESPONDER_87 = 0x04   // ServerHello
 const FLAG_KEM_1024 = 0x08
 const MSG_FINISHED = 0x01
 
-// The `kem` option. An initiator sends ML-KEM-768 unless told otherwise.
+// The `kem` option. An initiator sends ML-KEM-1024 unless told otherwise.
 const KEM_SETS = new Map([['ml-kem-768', ML_KEM_768], ['ml-kem-1024', ML_KEM_1024]])
-const DEFAULT_KEM = ML_KEM_768
+const DEFAULT_KEM = ML_KEM_1024
 
 // What each side signs names that side, so a Finished frame sent back to the
 // side that made it does not verify as the other side's.
@@ -161,7 +161,7 @@ const finishedSize = (set) => 1 + set.publicKey + set.signature
  * recv(n)    → Promise<Buffer> — read exactly n bytes (stream) or one message (WS)
  * options.identity: optional { publicKey, secretKey }, ML-DSA-87 or ML-DSA-65, for mutual auth
  * options.peerPublicKey: optional ML-DSA-87 or ML-DSA-65 public key the peer must prove
- * options.kem: optional 'ml-kem-768' (the default) or 'ml-kem-1024'
+ * options.kem: optional 'ml-kem-1024' (the default) or 'ml-kem-768'
  * Returns { txKey, rxKey } — tx is initiator→responder (C2S), rx is S2C
  * The result also carries peerPublicKey, the key the peer proved, or undefined
  * without mutual auth.
@@ -182,7 +182,9 @@ export async function initiatorHandshake(send, recv, options = {}) {
 
     // The ServerHello is in the set this side chose. Its echo of that choice
     // is checked by the signatures over the transcript, as the other echoes are.
-    const serverHello = await deadline.guard(recv(serverHelloSize(kemSet)))
+    const readServerHello = () => recv(serverHelloSize(kemSet))
+    const serverHello = await deadline.guard(
+      kemSet === ML_KEM_1024 ? explainClosedAfter1024(readServerHello) : readServerHello())
     validateHello(serverHello, serverHelloSize(kemSet), 'ServerHello',
       FLAG_AUTH | FLAG_INITIATOR_87 | FLAG_RESPONDER_87 | (flags & FLAG_KEM_1024))
 
@@ -355,6 +357,25 @@ function verifyFinished(plaintext, set, signed, role) {
 }
 
 const sizeOf = (key) => (key instanceof Uint8Array ? `${key.length} bytes` : typeof key)
+
+// A responder on 1.4.0 or earlier cannot read an ML-KEM-1024 ClientHello: 1.3.0
+// and 1.4.0 refuse it and close the connection without answering. That close
+// is all the initiator sees, so when the connection fails while it waits for
+// the ServerHello it says what the close most likely means. It cannot tell an
+// old responder from one that refused for another reason, so the transport's
+// own error stays on `cause`. A deadline is not a close and passes unchanged.
+async function explainClosedAfter1024(read) {
+  try {
+    return await read()
+  } catch (cause) {
+    const err = new KxcoPqTlsError(
+      'the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier ' +
+      "cannot read it: upgrade it, or pass kem: 'ml-kem-768'",
+    )
+    err.cause = cause
+    throw err
+  }
+}
 
 // The ML-KEM set an initiator's `kem` option names. Checked before anything is
 // sent, so a misspelt set fails here rather than quietly sending the default.

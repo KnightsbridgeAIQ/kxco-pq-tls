@@ -1,6 +1,6 @@
 # kxco-pq-tls
 
-**Hybrid ML-KEM-768 and X25519 encrypted channels for Node streams and WebSockets: a recorded session stays closed unless both are broken.**
+**Hybrid ML-KEM-1024 and X25519 encrypted channels for Node streams and WebSockets: a recorded session stays closed unless both are broken.**
 
 [![npm](https://img.shields.io/npm/v/kxco-pq-tls?label=npm&color=b0964f)](https://www.npmjs.com/package/kxco-pq-tls)
 [![downloads](https://img.shields.io/npm/dm/kxco-pq-tls?label=downloads&color=b0964f)](https://www.npmjs.com/package/kxco-pq-tls)
@@ -12,9 +12,9 @@
 
 Post-quantum encrypted channels for Node.js streams and WebSockets.
 
-Wraps any duplex stream or WebSocket with hybrid ML-KEM-768 (NIST FIPS 203) and X25519 key exchange and AES-256-GCM records, with optional ML-DSA-87 or ML-DSA-65 (NIST FIPS 204) signatures from both sides over the handshake transcript.
+Wraps any duplex stream or WebSocket with hybrid ML-KEM-1024 (NIST FIPS 203) and X25519 key exchange and AES-256-GCM records, with optional ML-DSA-87 or ML-DSA-65 (NIST FIPS 204) signatures from both sides over the handshake transcript. ML-KEM-768 stays available for responders on 1.4.0 or earlier: see [Version compatibility](#version-compatibility).
 
-- **Built for harvest-now, decrypt-later.** [Executive Order 14412](https://www.federalregister.gov/documents/2026/06/25/2026-12909/securing-the-nation-against-advanced-cryptographic-attacks) names adversaries "collecting United States information now, and decrypting it later once large-scale quantum computers are operational". Every session key here comes from ML-KEM-768 and X25519 together, with no mode that drops either, so a recorded session stays closed unless both are broken.
+- **Built for harvest-now, decrypt-later.** [Executive Order 14412](https://www.federalregister.gov/documents/2026/06/25/2026-12909/securing-the-nation-against-advanced-cryptographic-attacks) names adversaries "collecting United States information now, and decrypting it later once large-scale quantum computers are operational". Every session key here comes from ML-KEM-1024, or ML-KEM-768 where you choose it, and X25519 together, with no mode that drops either, so a recorded session stays closed unless both are broken.
 - **Mutual authentication at ML-DSA-87.** Each end signs the handshake transcript with its own ML-DSA-87 or ML-DSA-65 key, and the two ends need not use the same set.
 - **Separate keys each way, every record authenticated.** Per-direction AES-256-GCM keys and a sequence-number nonce on each record, so a tampered, replayed or reordered frame fails authentication.
 - **A handshake completes or it reports.** `handshakeTimeoutMs` bounds the whole exchange, 30 seconds by default, and fails with a distinct error code, so a stalled peer cannot hold a connection open.
@@ -37,13 +37,13 @@ Wraps any duplex stream or WebSocket with hybrid ML-KEM-768 (NIST FIPS 203) and 
 
 **For ordinary HTTPS traffic, use TLS with the standardised hybrid group.** OpenSSL 3.5 and Node 24.7+/22.20+ negotiate `X25519MLKEM768`, which gives you record-now-decrypt-later protection at the transport layer with a configuration change and no library at all. [`TLS.md`](TLS.md) has the exact settings for Node, nginx and OpenSSL, and the one command that proves the group was negotiated on the wire.
 
-The two are complementary. TLS protects the channel and leaves nothing behind once it closes. This package brings the same hybrid key exchange, and ML-DSA-87 or ML-DSA-65 identity keys, to channels TLS does not reach.
+The two are complementary. TLS protects the channel and leaves nothing behind once it closes. This package brings the same kind of hybrid key exchange, ML-KEM-1024 with X25519 by default, and ML-DSA-87 or ML-DSA-65 identity keys, to channels TLS does not reach.
 
 ## When to use this
 
 - Institution-to-institution links between services you run on both ends
 - Institution-to-user encrypted messaging over a WebSocket
-- Channels where a recorded session must stay closed to a future quantum computer: X25519 and ML-KEM-768 are combined, so both must be broken to recover the session key
+- Channels where a recorded session must stay closed to a future quantum computer: X25519 and ML-KEM-1024 are combined, so both must be broken to recover the session key
 
 For encryption at rest, use [`kxco-pq-vault`](https://www.npmjs.com/package/kxco-pq-vault).
 
@@ -173,7 +173,7 @@ Wraps a Node.js `Duplex` stream (e.g. `net.Socket`) with a post-quantum secure c
 ```ts
 interface ChannelOptions {
   role: 'initiator' | 'responder'
-  kem?: 'ml-kem-768' | 'ml-kem-1024'  // the initiator's ML-KEM set, default 'ml-kem-768'; responders accept both
+  kem?: 'ml-kem-768' | 'ml-kem-1024'  // the initiator's ML-KEM set, default 'ml-kem-1024'; responders accept both
   identity?: { publicKey: Uint8Array, secretKey: Uint8Array }  // ML-DSA-87 or ML-DSA-65 keypair
   peerPublicKey?: Uint8Array    // ML-DSA-87 or ML-DSA-65 key the peer must prove; needs identity
   handshakeTimeoutMs?: number   // total handshake deadline, default 30000, 0 disables
@@ -300,20 +300,21 @@ Session encryption uses AES-256-GCM with a per-message sequence number as the no
 
 ## Version compatibility
 
-The initiator chooses the ML-KEM set and the responder answers in it. A responder on 1.5.0 or later reads both sets, so upgrade responders before any initiator asks for ML-KEM-1024.
+The initiator chooses the ML-KEM set and the responder answers in it. A responder on 1.5.0 or later reads both sets. **From 2.0.0 an initiator sends ML-KEM-1024 by default**, so upgrade responders to 1.5.0 or later first, or pass `kem: 'ml-kem-768'` until they are.
 
 | The initiator sends | Responder 1.5.0 or later | Responder 1.4.0 or earlier |
 |---|---|---|
-| ML-KEM-768: 1.4.0 and earlier, and 1.5.0 by default | Connects on ML-KEM-768 | Connects on ML-KEM-768, as before |
-| ML-KEM-1024: 1.5.0 with `kem: 'ml-kem-1024'` | Connects on ML-KEM-1024 | Cannot read the hello; the handshake fails |
+| ML-KEM-1024: 2.0.0 by default, and 1.5.0 with `kem: 'ml-kem-1024'` | Connects on ML-KEM-1024 | Cannot read the hello; the handshake fails |
+| ML-KEM-768: 2.0.0 with `kem: 'ml-kem-768'`, 1.5.0 by default, and 1.4.0 and earlier | Connects on ML-KEM-768 | Connects on ML-KEM-768, as before |
 
 ```js
-const channel = await wrapStream(socket, { role: 'initiator', kem: 'ml-kem-1024' })
+// Reach a responder on 1.4.0 or earlier until it is upgraded
+const channel = await wrapStream(socket, { role: 'initiator', kem: 'ml-kem-768' })
 ```
 
 How an ML-KEM-1024 hello fails against a responder on 1.4.0 or earlier:
 
-- **1.3.0 and 1.4.0** refuse the hello and close the connection without answering, so the initiator's handshake fails at once, as a closed connection.
+- **1.3.0 and 1.4.0** refuse the hello and close the connection without answering. A 2.0.0 initiator then fails at once with `KxcoPqTlsError`: "the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'". The transport's own error is its `cause`. The initiator cannot tell an older responder from one that refused for another reason, such as a responder holding an identity refusing an initiator without one, so the same error appears then. A 1.5.0 initiator reports the close as it comes from the transport.
 - **1.2.4 and earlier** do not check the flag. Over a WebSocket they refuse the hello's length, and 1.2.4 closes the connection. Over a stream they answer with an ML-KEM-768 ServerHello the initiator cannot use, and the initiator fails at its handshake deadline with `ERR_HANDSHAKE_TIMEOUT`.
 
 Identities keep their own floor: mutual authentication needs 1.2.4 or later at both ends, and ML-DSA-87 on either side needs 1.3.0 or later at both ends.
@@ -355,7 +356,7 @@ above it.
 
 ## Security
 
-**ML-DSA-87**, **ML-DSA-65** (NIST FIPS 204) and **ML-KEM-768** (NIST FIPS 203) via [`kxco-post-quantum`](https://www.npmjs.com/package/kxco-post-quantum), running on the OpenSSL 3.5 primitives where the runtime provides them. X25519, HKDF and AES-256-GCM come from `@noble/curves`, `@noble/hashes` and `@noble/ciphers`, pinned to exact versions. No custom primitives.
+**ML-DSA-87**, **ML-DSA-65** (NIST FIPS 204), **ML-KEM-1024** and **ML-KEM-768** (NIST FIPS 203) via [`kxco-post-quantum`](https://www.npmjs.com/package/kxco-post-quantum), running on the OpenSSL 3.5 primitives where the runtime provides them. X25519, HKDF and AES-256-GCM come from `@noble/curves`, `@noble/hashes` and `@noble/ciphers`, pinned to exact versions. No custom primitives.
 
 Evidenced, and reproducible on your own machine:
 
@@ -367,7 +368,7 @@ Evidenced, and reproducible on your own machine:
 
 Dependency audit history is recorded in [AUDIT.md](https://github.com/KnightsbridgeAIQ/kxco-post-quantum/blob/main/AUDIT.md).
 
-Key exchange combines ML-KEM-768 with X25519: an adversary who breaks X25519 still cannot recover the session key. For post-quantum transport on public endpoints, see [`TLS.md`](TLS.md), where OpenSSL 3.5 negotiates the standardised `X25519MLKEM768` hybrid group.
+Key exchange combines ML-KEM-1024, or ML-KEM-768 where you choose it, with X25519: an adversary who breaks X25519 still cannot recover the session key. For post-quantum transport on public endpoints, see [`TLS.md`](TLS.md), where OpenSSL 3.5 negotiates the standardised `X25519MLKEM768` hybrid group.
 
 ## License
 

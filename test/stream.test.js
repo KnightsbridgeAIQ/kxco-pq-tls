@@ -370,9 +370,10 @@ test('wrapStream: after mutual authentication the first record does not reuse th
   client.write(secret)
   assert.ok((await received).equals(secret))
 
+  // The initiator's ClientHello is 1602 bytes, ML-KEM-1024 being the default.
   const all = Buffer.concat(wire)
-  const finished = all.subarray(1218, 1218 + 5278)
-  const record = all.subarray(1218 + 5278 + 4)
+  const finished = all.subarray(1602, 1602 + 5278)
+  const record = all.subarray(1602 + 5278 + 4)
   const opening = Buffer.concat([Buffer.from([0x01]), Buffer.from(initId.publicKey)])
   const guess = Buffer.alloc(secret.length)
   for (let i = 0; i < guess.length; i++) guess[i] = finished[i] ^ record[i] ^ opening[i]
@@ -475,8 +476,8 @@ test('wrapStream: an initiator on 1.4.0 reaches this responder on ML-KEM-768 ove
   }
 })
 
-test('wrapStream: this initiator on ML-KEM-768, by default or by name, reaches a 1.4.0 responder over TCP', async (t) => {
-  for (const kem of [{}, { kem: 'ml-kem-768' }]) {
+test('wrapStream: this initiator given kem: ml-kem-768 reaches a 1.4.0 responder over TCP', async (t) => {
+  for (const kem of [{ kem: 'ml-kem-768' }]) {
     for (const [label, i, r] of IDENTITIES) {
       const what = `${kem.kem ?? 'default'}, ${label}`
       const [c, s] = await pairFor(t)
@@ -490,30 +491,43 @@ test('wrapStream: this initiator on ML-KEM-768, by default or by name, reaches a
   }
 })
 
-test('wrapStream: this initiator on ML-KEM-1024 meets a 1.4.0 responder: refused, nothing answered, both ends closed', async (t) => {
-  const [c, s] = await pairFor(t)
-  const started = Date.now()
-  const [client, server] = await Promise.all([
-    outcome(wrapStream(c, { role: 'initiator', kem: 'ml-kem-1024', handshakeTimeoutMs: 3000 })),
-    outcome(v140.wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000 })),
-  ])
-  const elapsed = Date.now() - started
-  assert.equal(server.error?.message, 'ClientHello: unknown flags 0x8')
-  assert.equal(c.bytesWritten, 1602, 'the ClientHello')
-  assert.equal(s.bytesWritten, 0, 'the responder answered nothing')
-  assert.equal(c.bytesRead, 0, 'nothing reached the initiator')
-  assert.ok(s.destroyed, 'the responder closed the connection, and the rest of the hello with it')
-  assert.ok(c.destroyed, 'the initiator closed its end')
-  // The initiator learns of it from the close, at once, not at its deadline.
-  assert.equal(client.error?.message, 'stream ended during handshake')
-  assert.ok(elapsed < 2000, `the initiator waited ${elapsed}ms`)
+test('wrapStream: this initiator on ML-KEM-1024, by default or by name, meets a 1.4.0 responder: refused, nothing answered, both ends closed, and the initiator says why', async (t) => {
+  for (const kem of [{}, { kem: 'ml-kem-1024' }]) {
+    const what = kem.kem ?? 'default'
+    const [c, s] = await pairFor(t)
+    const started = Date.now()
+    const [client, server] = await Promise.all([
+      outcome(wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 3000, ...kem })),
+      outcome(v140.wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000 })),
+    ])
+    const elapsed = Date.now() - started
+    assert.equal(server.error?.message, 'ClientHello: unknown flags 0x8', what)
+    assert.equal(c.bytesWritten, 1602, `${what}: the ClientHello`)
+    assert.equal(s.bytesWritten, 0, `${what}: the responder answered nothing`)
+    assert.equal(c.bytesRead, 0, `${what}: nothing reached the initiator`)
+    assert.ok(s.destroyed, `${what}: the responder closed the connection, and the rest of the hello with it`)
+    assert.ok(c.destroyed, `${what}: the initiator closed its end`)
+    // The initiator learns of it from the close, at once, not at its deadline,
+    // and says what the close most likely means, keeping the close as cause.
+    assert.ok(client.error instanceof KxcoPqTlsError, what)
+    assert.equal(client.error.message, 'the responder closed after an ML-KEM-1024 hello; a responder on ' +
+      "kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'", what)
+    assert.equal(client.error.cause?.message, 'stream ended during handshake', what)
+    assert.ok(elapsed < 2000, `${what}: the initiator waited ${elapsed}ms`)
+  }
 })
 
-test('wrapStream: two ends on this version agree ML-KEM-1024 over TCP, 1602-byte hellos both ways', async (t) => {
-  for (const [label, i, r] of IDENTITIES) {
+test('wrapStream: two ends on this version agree ML-KEM-1024 over TCP, by default or by name, 1602-byte hellos both ways', async (t) => {
+  const cases = [
+    ['default, no identities', {}, {}],
+    ['by name, no identities', { kem: 'ml-kem-1024' }, {}],
+    ['default, ML-DSA-87 identities', { identity: initId87 }, { identity: respId87 }],
+    ['by name, ML-DSA-87 identities', { kem: 'ml-kem-1024', identity: initId87 }, { identity: respId87 }],
+  ]
+  for (const [label, i, r] of cases) {
     const [c, s] = await pairFor(t)
     const [client, server] = await Promise.all([
-      wrapStream(c, { role: 'initiator', kem: 'ml-kem-1024', handshakeTimeoutMs: 3000, ...i }),
+      wrapStream(c, { role: 'initiator', handshakeTimeoutMs: 3000, ...i }),
       wrapStream(s, { role: 'responder', handshakeTimeoutMs: 3000, ...r }),
     ])
     if (!i.identity) {

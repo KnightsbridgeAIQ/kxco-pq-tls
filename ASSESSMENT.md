@@ -17,9 +17,9 @@ handshake, its own record layer, and mutual ML-DSA-87 or ML-DSA-65 identity.
 Most of this family computes over bytes a caller hands it. This one carries a
 protocol. That is the thing to assess:
 
-**Key exchange is hybrid by construction.** ML-KEM-768, or ML-KEM-1024 when the
-initiator asks for it, combined with X25519, mixed through HKDF, with
-AES-256-GCM and a sequence-number nonce on the records.
+**Key exchange is hybrid by construction.** ML-KEM-1024 by default, or
+ML-KEM-768 when the initiator asks for it, combined with X25519, mixed through
+HKDF, with AES-256-GCM and a sequence-number nonce on the records.
 Both secrets are always mixed, so the session holds if either primitive holds.
 An adversary who breaks X25519 recovers nothing; an adversary who breaks ML-KEM
 recovers nothing. This is the belt-and-braces position the standards bodies
@@ -87,9 +87,11 @@ ends run 1.3.0 a deployment moves its identities to ML-DSA-87 one end at a
 time.
 
 **ML-KEM sets side by side.** A responder on 1.5.0 or later accepts
-ML-KEM-768 and ML-KEM-1024 and answers in the set the initiator chose, so a
-deployment moves its sessions to ML-KEM-1024 by upgrading responders first and
-then setting `kem: 'ml-kem-1024'` on initiators.
+ML-KEM-768 and ML-KEM-1024 and answers in the set the initiator chose. A
+deployment moves its sessions to ML-KEM-1024 by upgrading responders first,
+then initiators, which send ML-KEM-1024 by default from 2.0.0. An initiator
+that must still reach a responder on 1.4.0 or earlier passes
+`kem: 'ml-kem-768'`.
 
 **Versioned on the wire.** Both `ClientHello` and `ServerHello` open with
 `version = 0x01`, and the HKDF info string is `kxco-pq-tls-v1`. A v2 handshake
@@ -125,8 +127,8 @@ is the lever for designs that open many short connections, and the primitives
 package's `BENCHMARKS.md` has the per-operation figures at p50 and p99 on both
 backends.
 
-**Sizing.** A ClientHello is 1218 bytes and a ServerHello 1122 with ML-KEM-768;
-with ML-KEM-1024 both are 1602. With mutual
+**Sizing.** With ML-KEM-1024, the default, a ClientHello and a ServerHello are
+1602 bytes each; with ML-KEM-768 they are 1218 and 1122. With mutual
 authentication each side then sends one Finished frame, 7236 bytes on the wire
 for ML-DSA-87 and 5278 for ML-DSA-65. Worth knowing
 for constrained links, and the reason the sizes are documented rather than

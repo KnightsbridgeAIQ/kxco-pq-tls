@@ -20,7 +20,7 @@ import { Duplex } from 'node:stream'
 import fc from 'fast-check'
 import { wrapStream, KxcoPqTlsError } from '../src/index.js'
 
-// Every case runs a full ML-KEM-768 and X25519 handshake, so a modest run
+// Every case runs a full ML-KEM-1024 and X25519 handshake, so a modest run
 // count keeps the suite fast while covering a spread of lengths and orders.
 const RUNS = { numRuns: 30 }
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.0.0 (2026-10-10)
+
+**Breaking: an initiator sends ML-KEM-1024 by default.** With no `kem` option
+its ClientHello declares ML-KEM-1024 (NIST FIPS 203, security category 5) and
+both hellos are 1602 bytes. A responder on 1.4.0 or earlier cannot read that
+hello, so a 2.0.0 initiator does not connect to one unless it passes
+`kem: 'ml-kem-768'`. Upgrade responders to 1.5.0 or later first. The README's
+version compatibility table shows every pairing.
+
+**`kem: 'ml-kem-768'` keeps the 1.4.0 handshake.** An initiator given it sends
+exactly what 1.4.0 sends and derives the same keys, so it reaches responders on
+every earlier version that 1.4.0 reaches.
+
+**An initiator says why an older responder closed.** When the connection
+closes while an ML-KEM-1024 initiator waits for the ServerHello, the handshake
+fails with `KxcoPqTlsError`: "the responder closed after an ML-KEM-1024 hello;
+a responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass
+kem: 'ml-kem-768'". A responder on 1.3.0 or 1.4.0 refuses the hello and closes
+the connection without answering, and this is what the initiator sees. The
+transport's own error is kept as `cause`, because a close alone cannot show
+why the responder refused: a responder holding an identity that refuses an
+initiator without one produces the same error.
+
+Responders are unchanged from 1.5.0: they accept both sets and answer in the
+one the initiator chose. The typings give the new default.
+
 ## 1.5.0 (2026-10-10)
 
 **ML-KEM-1024 for the session key, when the initiator asks for it.** An
