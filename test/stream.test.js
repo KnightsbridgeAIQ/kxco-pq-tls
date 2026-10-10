@@ -549,7 +549,7 @@ test('wrapStream: this initiator on ML-KEM-1024, by default or by name, meets a 
     // deadline, then says why, keeping the timeout as cause, and closes.
     assert.ok(client.error instanceof KxcoPqTlsError, what)
     assert.equal(client.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024, what)
-    assert.equal(client.error.message, 'no valid ML-KEM-1024 ServerHello before the deadline: a responder on ' +
+    assert.equal(client.error.message, 'no valid ML-KEM-1024 ServerHello before the deadline; likely cause: a responder on ' +
       'kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: ' +
       "upgrade the responder, or pass kem: 'ml-kem-768'", what)
     assert.equal(client.error.cause?.code, ERR_HANDSHAKE_TIMEOUT, what)
@@ -558,6 +558,22 @@ test('wrapStream: this initiator on ML-KEM-1024, by default or by name, meets a 
     // The 1.2.4 side's channel then ends rather than lingering.
     const ended = new Promise((res) => { server.value.once('end', res); server.value.once('close', res); server.value.resume() })
     await within(2000, () => `${what}: the 1.2.4 channel is still open`, ended)
+  }
+
+  // With handshakeTimeoutMs: 0 there is no deadline to explain: the initiator
+  // waits until the transport closes, then raises the close error.
+  {
+    const [c0, s0] = await pairFor(t)
+    const settled = outcome(wrapStream(c0, { role: 'initiator', handshakeTimeoutMs: 0 }))
+    const old = await v124.wrapStream(s0, { role: 'responder', handshakeTimeoutMs: 3000 })
+    old.on('error', () => {})
+    const early = await Promise.race([settled, new Promise((res) => setTimeout(() => res('still waiting'), 300))])
+    assert.equal(early, 'still waiting', 'no deadline: the initiator is still waiting')
+    s0.destroy()
+    const { error } = await within(2000, () => 'the initiator did not see the close', settled)
+    assert.equal(error?.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
+    assert.match(error.message, /^the responder closed after an ML-KEM-1024 hello/)
+    assert.equal(error.cause?.message, 'stream ended during handshake')
   }
 
   // kem: 'ml-kem-768' reaches it.

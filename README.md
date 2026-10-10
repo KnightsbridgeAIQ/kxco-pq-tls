@@ -221,7 +221,10 @@ On ML-KEM-1024, the default, a deadline that passes before a usable ServerHello
 has arrived fails with `ERR_RESPONDER_CANNOT_READ_ML_KEM_1024` instead, because
 the likely reason is a responder on 1.2.4 or earlier. The `ERR_HANDSHAKE_TIMEOUT`
 error is its `cause`. A deadline later in the handshake, such as the identity
-mismatch above, is `ERR_HANDSHAKE_TIMEOUT`. See
+mismatch above, is `ERR_HANDSHAKE_TIMEOUT`. With `handshakeTimeoutMs: 0` there
+is no deadline, so against a responder on 1.2.4 or earlier over a stream the
+deadline explanation never fires: the call waits until the transport closes,
+and then fails with the close error. See
 [Version compatibility](#version-compatibility).
 
 ### `wrapWebSocket(ws, options)` → `Promise<PqTlsWebSocket>`
@@ -336,7 +339,7 @@ What a 2.0.0 initiator on ML-KEM-1024 raises against each older responder. Both 
 |---|---|---|
 | 1.3.0 or 1.4.0, any transport | Refuses it and closes the connection without answering | At once: "the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass kem: 'ml-kem-768'". The `cause` is the transport's close. |
 | 1.2.4, WebSocket | Refuses its length and closes the connection | At once: the same error |
-| 1.2.4 or earlier, stream | Ignores the flag, answers with a 1122-byte ML-KEM-768 ServerHello and takes itself to be connected | At the handshake deadline: "no valid ML-KEM-1024 ServerHello before the deadline: a responder on kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: upgrade the responder, or pass kem: 'ml-kem-768'". The `cause` is the `ERR_HANDSHAKE_TIMEOUT` error. |
+| 1.2.4 or earlier, stream | Ignores the flag, answers with a 1122-byte ML-KEM-768 ServerHello and takes itself to be connected | At the handshake deadline: "no valid ML-KEM-1024 ServerHello before the deadline; likely cause: a responder on kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: upgrade the responder, or pass kem: 'ml-kem-768'". The `cause` is the `ERR_HANDSHAKE_TIMEOUT` error. |
 | 1.2.3 or earlier, WebSocket | Refuses its length and leaves the connection open | At the handshake deadline: the same deadline error |
 
 The initiator sees only a close or a deadline, so it cannot tell an older responder from one that failed for another reason, such as a responder holding an identity that refuses an initiator without one, or a peer that never answers. The same error appears then, and `cause` holds what actually happened. One case gives neither error: with identities at both ends against 1.2.4 over a stream, 1.2.4 sends its Finished frame straight after its 1122-byte ServerHello, so the initiator receives 1602 bytes it cannot tell from a real ServerHello. 1.2.4 then refuses the initiator's Finished frame and closes, and the initiator fails at once with the transport's own error, "stream ended during handshake". A 1.5.0 initiator reports every close or timeout as the transport or the deadline gives it.

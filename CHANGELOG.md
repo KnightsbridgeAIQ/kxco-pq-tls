@@ -28,12 +28,13 @@ original error kept as `cause`. The code is for diagnosis.
   responder on kxco-pq-tls 1.4 or earlier cannot read it: upgrade it, or pass
   kem: 'ml-kem-768'". A responder on 1.3.0 or 1.4.0 refuses the hello and
   closes without answering, and 1.2.4 does the same over a WebSocket.
-- The deadline passes: "no valid ML-KEM-1024 ServerHello before the deadline:
-  a responder on kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag,
-  and one on 1.3 or 1.4 refuses it: upgrade the responder, or pass kem:
-  'ml-kem-768'". A responder on 1.2.4 or earlier does not check the flag and
-  answers over a stream with a 1122-byte ML-KEM-768 ServerHello, so the wait
-  for a 1602-byte one runs into the deadline. The `cause` is the
+- The deadline passes: "no valid ML-KEM-1024 ServerHello before the deadline;
+  likely cause: a responder on kxco-pq-tls 1.2.4 or earlier ignores the
+  ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: upgrade the responder,
+  or pass kem: 'ml-kem-768'". The cause is stated as likely because a slow or
+  silent peer looks the same. A responder on 1.2.4 or earlier does not check
+  the flag and answers over a stream with a 1122-byte ML-KEM-768 ServerHello,
+  so the wait for a 1602-byte one runs into the deadline. The `cause` is the
   `ERR_HANDSHAKE_TIMEOUT` error.
 
 A close or a deadline alone cannot show why the responder failed, so the same

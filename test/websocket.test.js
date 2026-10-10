@@ -18,6 +18,8 @@ import { KxcoPqTlsError, ERR_HANDSHAKE_TIMEOUT, ERR_RESPONDER_CANNOT_READ_ML_KEM
 import * as v140 from 'kxco-pq-tls-140'
 // The last release before responders checked hello flags, unmodified.
 import * as v124 from 'kxco-pq-tls-124'
+// The last release before a failed handshake closed the WebSocket, unmodified.
+import * as v123 from 'kxco-pq-tls-123'
 
 const initId = mlDsa.ml_dsa65.keygen()
 const respId = mlDsa.ml_dsa65.keygen()
@@ -487,4 +489,40 @@ test('wrapWebSocket: a 1218-byte hello that declares ML-KEM-1024 is refused at o
   assert.ok(elapsed < 1000, `the responder took ${elapsed}ms`)
   // The ML-KEM-768 initiator sees the close as the transport reports it.
   assert.equal(client.error?.message, 'WebSocket closed during handshake')
+})
+
+test('wrapWebSocket: this initiator on ML-KEM-1024 meets a 1.2.3 responder: refused by length, the connection left open, and the initiator explains the deadline', async (t) => {
+  const deadline = 500
+  const [c, s] = await wsPair(t)
+  const atClient = heard(c)
+  let firstClose = null
+  const noteClose = () => { firstClose ??= Date.now() }
+  c.once('close', noteClose)
+  s.once('close', noteClose)
+  const started = Date.now()
+  const [client, server] = await Promise.all([
+    outcome(wrapWebSocket(c, { role: 'initiator', handshakeTimeoutMs: deadline })),
+    v123.wrapWebSocket(s, { role: 'responder', handshakeTimeoutMs: 3000 }).then(
+      () => ({}),
+      (error) => ({ error, after: Date.now() - started, open: [c.readyState, s.readyState] })),
+  ])
+  const elapsed = Date.now() - started
+  // 1.2.3 refuses the 1602-byte hello by its length at once, answers nothing,
+  // and does not close the WebSocket.
+  assert.equal(server.error?.message, 'ClientHello: expected 1218 bytes, got 1602')
+  assert.ok(server.after < deadline, `1.2.3 refused after ${server.after}ms`)
+  assert.deepEqual(server.open, [1, 1], 'both ends still open when 1.2.3 refused')
+  assert.deepEqual(atClient, [], 'the responder answered nothing')
+  // So the initiator hears nothing until its deadline, then explains it, with
+  // the timeout as cause.
+  assert.ok(client.error instanceof KxcoPqTlsError, 'the initiator does not complete')
+  assert.equal(client.error.code, ERR_RESPONDER_CANNOT_READ_ML_KEM_1024)
+  assert.equal(client.error.message, 'no valid ML-KEM-1024 ServerHello before the deadline; likely cause: ' +
+    'a responder on kxco-pq-tls 1.2.4 or earlier ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 ' +
+    "refuses it: upgrade the responder, or pass kem: 'ml-kem-768'")
+  assert.equal(client.error.cause?.code, ERR_HANDSHAKE_TIMEOUT)
+  assert.ok(elapsed >= deadline && elapsed < deadline + 1500, `the initiator failed after ${elapsed}ms`)
+  // The connection stayed open until then: the first close is the initiator's own.
+  await within(2000, 'the WebSocket is still open', new Promise((res) => (c.readyState === 3 ? res() : c.once('close', res))))
+  assert.ok(firstClose - started >= deadline, `the connection closed after ${firstClose - started}ms`)
 })

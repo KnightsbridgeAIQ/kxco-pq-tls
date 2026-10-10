@@ -380,7 +380,7 @@ const CLOSED_AFTER_1024 =
   'the responder closed after an ML-KEM-1024 hello; a responder on kxco-pq-tls 1.4 or earlier ' +
   "cannot read it: upgrade it, or pass kem: 'ml-kem-768'"
 const NO_SERVER_HELLO_1024 =
-  'no valid ML-KEM-1024 ServerHello before the deadline: a responder on kxco-pq-tls 1.2.4 or earlier ' +
+  'no valid ML-KEM-1024 ServerHello before the deadline; likely cause: a responder on kxco-pq-tls 1.2.4 or earlier ' +
   "ignores the ML-KEM-1024 flag, and one on 1.3 or 1.4 refuses it: upgrade the responder, or pass kem: 'ml-kem-768'"
 
 async function readServerHello1024(deadline, read) {
