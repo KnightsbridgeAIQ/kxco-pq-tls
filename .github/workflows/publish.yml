@@ -29,7 +29,7 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Node 26 because its bundled npm (11.20 on 26.11) already carries
           # Trusted Publishing's OIDC support, which arrived in npm 11.5.1. On
