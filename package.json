@@ -73,7 +73,7 @@
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "kxco-post-quantum": "^1.6.0"
+    "kxco-post-quantum": "^1.10.0"
   },
   "scripts": {
     "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js test/websocket.test.js test/property.test.js",
