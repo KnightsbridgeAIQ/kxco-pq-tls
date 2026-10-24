@@ -16,7 +16,7 @@ You need **OpenSSL 3.5 or later**. That means Node 24.7+ or 22.20+, or a build l
 node -p "process.versions.openssl"    # must be 3.5.x or later
 ```
 
-This is transport confidentiality only. It says nothing about who is at the other end — that is what the ML-DSA-65 identity layer is for.
+This is transport confidentiality only. It says nothing about who is at the other end: that is what the ML-DSA-87 or ML-DSA-65 identity layer is for.
 
 ---
 
@@ -149,7 +149,7 @@ Requires nginx built against OpenSSL 3.5+. `nginx -V 2>&1 | grep -o 'OpenSSL [0-
 TLS protects the channel. It says nothing about who is at the other end, and it leaves nothing behind afterwards.
 
 - **Channel** — `X25519MLKEM768`, this document.
-- **Who signed it** — ML-DSA-65 on the intent or the envelope. Survives the connection closing, and can be checked years later by someone who was never on it.
+- **Who signed it**: ML-DSA-87 or ML-DSA-65 on the intent or the envelope. Survives the connection closing, and can be checked years later by someone who was never on it.
 - **Whether that signer is still trusted** — a live registry lookup, `anchored+live` in `kxco-pq-network`.
 
 A record-now-decrypt-later adversary is defeated by the first. An adversary who obtained a signing key is not, and no amount of transport security helps: that is what revocation is for.
