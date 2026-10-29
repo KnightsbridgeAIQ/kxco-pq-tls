@@ -8,7 +8,7 @@ Everything below was measured on OpenSSL 3.5.6 with Node 26.1.0, not read off a 
 
 ## The short version
 
-Production TLS to the KXCO endpoints uses the hybrid key exchange `X25519MLKEM768`, standardised in [RFC 9370 / draft-kwiatkowski-tls-ecdhe-mlkem](https://datatracker.ietf.org/doc/draft-ietf-tls-ecdhe-mlkem/). It combines X25519 with ML-KEM-768, so an attacker must break **both** to recover the session key.
+Production TLS to the KXCO endpoints uses the hybrid key exchange `X25519MLKEM768`, standardised in [RFC 10024](https://www.rfc-editor.org/rfc/rfc10024) (August 2026; it was draft-ietf-tls-ecdhe-mlkem). It combines X25519 with ML-KEM-768, so an attacker must break **both** to recover the session key.
 
 You need **OpenSSL 3.5 or later**. That means Node 24.7+ or 22.20+, or a build linked against your own OpenSSL 3.5.
 

@@ -1,6 +1,6 @@
 {
   "name": "kxco-pq-tls",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Post-quantum encrypted channels for Node.js streams and WebSockets. Hybrid ML-KEM-1024 (NIST FIPS 203) and X25519 key exchange by default, with ML-KEM-768 for older responders, so a recorded session stays closed unless both are broken, with AES-256-GCM records and optional ML-DSA-87 or ML-DSA-65 identity keys.",
   "keywords": [
     "post-quantum",
@@ -73,7 +73,7 @@
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "kxco-post-quantum": "^1.11.1"
+    "kxco-post-quantum": "^1.13.0"
   },
   "scripts": {
     "test": "node --test --test-timeout=15000 test/primitives.test.js test/handshake.test.js test/stream.test.js test/websocket.test.js test/property.test.js",
