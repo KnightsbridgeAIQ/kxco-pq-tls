@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.1 (2026-10-29)
+
+Dependencies and documentation. No source file changed and the API is the same.
+
+- `kxco-post-quantum` dependency floor moves from `^1.11.1` to `^1.13.0`, the current release.
+- TLS.md cites RFC 10024 (August 2026) as the standard for `X25519MLKEM768`. It cited RFC 9370, which covers IKEv2, not TLS.
+- TLS.md names ML-DSA-87 beside ML-DSA-65 as the identity layer.
+
 ## 2.0.0 (2026-10-10)
 
 **Breaking: an initiator sends ML-KEM-1024 by default.** With no `kem` option
