@@ -1,12 +1,15 @@
 name: Dependabot auto-merge
 on: pull_request
 
+# Read-only by default. The job below raises only the write access it needs.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   automerge:
+    permissions:
+      contents: write
+      pull-requests: write
     name: automerge
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
